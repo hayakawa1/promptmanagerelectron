@@ -2,52 +2,15 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PromptManager</title>
+    <title>Electron Image Viewer</title>
     <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' atom:">
     <style>
-        body { font-family: sans-serif; margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; }
-        h1 { margin: 10px 15px; font-size: 1.5em; }
-        .toolbar {
-            display: flex;
-            justify-content: space-between; /* Push groups apart */
-            align-items: center;
-            padding: 8px 15px;
-            background-color: #f5f5f5;
-            border-bottom: 1px solid #ccc;
-            flex-wrap: wrap; /* Allow wrapping on smaller screens */
-        }
-        .toolbar > div { /* Target direct children divs (filter-group, action-group) */
-            display: flex;
-            align-items: center;
-            gap: 8px; /* Spacing between items within a group */
-            margin-bottom: 5px; /* Add some bottom margin for wrapped items */
-        }
-        .toolbar label {
-            font-weight: bold;
-            font-size: 0.9em;
-        }
-        .toolbar select,
-        .toolbar input[type="text"] {
-            padding: 4px 6px;
-            border: 1px solid #ccc;
-            border-radius: 3px;
-        }
-         .toolbar input[type="text"] {
-            min-width: 150px; /* Give search/memo inputs some base width */
-         }
-        .toolbar button {
-            padding: 4px 10px;
-            cursor: pointer;
-        }
-
+        body { font-family: sans-serif; margin: 10px; }
         #image-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); /* Responsive grid */
             gap: 10px;
-            padding: 15px; /* Add padding around the grid */
-            overflow-y: auto; /* Make grid scrollable */
-            flex-grow: 1; /* Allow grid to take remaining space */
+            margin-top: 15px;
         }
         #image-grid img {
             width: 100%;
@@ -71,12 +34,12 @@
         }
         button:disabled { cursor: not-allowed; opacity: 0.6; }
         .status-bar { /* Basic status bar styling */
-            padding: 5px 15px;
             position: fixed;
             bottom: 0;
             left: 0;
             width: 100%;
             background-color: #f0f0f0;
+            padding: 5px 10px;
             border-top: 1px solid #ccc;
             font-size: 0.9em;
         }
@@ -146,35 +109,42 @@
     </style>
 </head>
 <body>
+    <h1>Electron Image Viewer</h1>
     <div class="toolbar">
-        <div class="filter-group">
-            <label for="folder-filter">フォルダ:</label>
-            <select id="folder-filter">
-                <option value="">全てのフォルダ</option>
-                <!-- Folder options will be populated here -->
-            </select>
-            <label for="png-word-filter">PNG単語:</label>
-            <select id="png-word-filter">
-                <option value="">全てのPNG単語</option>
-                <!-- PNG word options will be populated here -->
-            </select>
-             <label for="search-input">検索:</label>
-            <input type="text" id="search-input" placeholder="ファイル名, メモ..."/>
-        </div>
-        <div class="action-group">
+        <!-- <button id="select-folder-button">フォルダを選択してスキャン</button>
+        <p id="scan-status"></p> -->
+        <!-- Folder Filter Dropdown -->
+        <select id="folder-filter" style="margin-left: 10px;">
+            <option value="">全てのフォルダ</option>
+            <!-- Folder options will be populated here -->
+        </select>
+        <select id="png-word-filter">
+            <option value="">全てのPNG単語</option>
+            <!-- PNG word options will be populated here -->
+        </select>
+        <input type="text" id="search-input" placeholder="ファイル名, メモ, PNG Info で検索..." style="margin-left: 10px; width: 200px;"/>
+        <!-- Selection Actions -->
+        <span style="margin-left: auto;">
             <input type="text" id="memo-input" placeholder="選択した画像のメモを入力..." disabled />
-            <button id="update-memo-button" disabled>メモ更新</button>
-            <button id="delete-selected-button" disabled>削除</button>
-            <button id="export-selected-button" disabled>保存</button>
-        </div>
+            <button id="update-memo-button" disabled>メモを更新</button>
+            <button id="delete-selected-button" disabled>選択画像を削除</button>
+            <button id="export-selected-button" disabled>選択画像を保存</button>
+        </span>
+    </div>
+    <!-- <div class="control-group">
+        <h2>IPC Test</h2>
+        <button id="ipc-test">Ping Main</button>
+        <span id="ipc-result"></span>
+    </div> -->
+
+    <div class="control-group">
+        <h2>画像フォルダ操作</h2>
     </div>
 
     <div id="image-grid"></div>
 
     <!-- Status Bar -->
-    <div class="status-bar">
-      <span id="scan-status">Ready</span>
-    </div>
+    <div id="scan-status" class="status-bar">Ready</div>
 
     <script src="./renderer.js"></script>
 

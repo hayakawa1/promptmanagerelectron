@@ -14,78 +14,6 @@ function safeDecode(buffer, encoding = 'latin1') {
   return cleanedBuffer.toString(encoding);
 }
 
-// Helper function to process PNG text chunks
-function processPngChunk(chunk, filePath) {
-  const chunkName = chunk.name;
-  const chunkData = chunk.data; // Buffer
-  let key = '';
-  let value = '';
-  let separatorIndex = -1;
-
-  try {
-    if (chunkName === 'tEXt') {
-      separatorIndex = chunkData.indexOf(0); // Null separator
-      if (separatorIndex !== -1) {
-        key = safeDecode(chunkData.slice(0, separatorIndex), 'latin1');
-        value = safeDecode(chunkData.slice(separatorIndex + 1), 'latin1');
-      }
-    } else if (chunkName === 'zTXt') {
-      separatorIndex = chunkData.indexOf(0);
-      if (separatorIndex !== -1 && chunkData[separatorIndex + 1] === 0) { // 0 = compression method deflate
-        key = safeDecode(chunkData.slice(0, separatorIndex), 'latin1');
-        try {
-          const compressedValue = chunkData.slice(separatorIndex + 2);
-          value = safeDecode(zlib.inflateSync(compressedValue), 'utf8');
-        } catch (e) {
-          console.warn(`Failed to decompress zTXt chunk ('${key}') for ${filePath}: ${e.message}`);
-          value = '[decompression error]';
-        }
-      }
-    } else if (chunkName === 'iTXt') {
-      separatorIndex = chunkData.indexOf(0);
-      if (separatorIndex !== -1) {
-        key = safeDecode(chunkData.slice(0, separatorIndex), 'latin1');
-        const fields = [];
-        let current = separatorIndex + 1;
-        while (current < chunkData.length) {
-          let nextNull = chunkData.indexOf(0, current);
-          if (nextNull === -1) nextNull = chunkData.length;
-          fields.push(chunkData.slice(current, nextNull));
-          current = nextNull + 1;
-        }
-        if (fields.length >= 4) {
-          const compFlag = fields[0][0];
-          const compMethod = fields[1][0];
-          const rawValue = fields[4] || Buffer.alloc(0);
-          if (compFlag === 1 && compMethod === 0) { // Compressed with deflate
-            try {
-              value = safeDecode(zlib.inflateSync(rawValue), 'utf8');
-            } catch (e) {
-              console.warn(`Failed to decompress iTXt chunk ('${key}') for ${filePath}: ${e.message}`);
-              value = '[decompression error]';
-            }
-          } else if (compFlag === 0) { // Not compressed
-            value = safeDecode(rawValue, 'utf8');
-          } else {
-            value = '[unsupported compression]';
-          }
-        }
-      }
-    }
-
-    if (key || value) { // Only return if we got something
-        // Limit key/value length to prevent huge strings
-        const MAX_LEN = 200;
-        const displayKey = key.length > MAX_LEN ? key.substring(0, MAX_LEN) + '...' : key;
-        const displayValue = value.length > MAX_LEN ? value.substring(0, MAX_LEN) + '...' : value;
-        return `${chunkName}: ${displayKey}=${displayValue}`;
-    }
-  } catch (err) {
-      console.error(`Error decoding chunk ${chunkName} for ${filePath}:`, err);
-  }
-  return null; // Return null if no valid text extracted or on error
-}
-
 // データベースファイルのパスをプロジェクトルートに変更
 // const dbPath = path.join(app.getPath('userData'), 'file_db.sqlite');
 const dbPath = path.join(__dirname, 'file_db.sqlite');
@@ -150,12 +78,14 @@ function createWindow() {
   // --- Create Application Menu ---
   const menuTemplate = [
     {
-      label: 'ファイル(F)', // File
+      label: 'ファイル',
       submenu: [
         {
-          label: 'フォルダをスキャンして画像を追加(O)...',
+          label: 'フォルダをスキャン',
           accelerator: 'CmdOrCtrl+O',
           click: async () => {
+            // Send a message to the renderer process to trigger folder selection
+            // Or call the handler logic directly if appropriate
             if (mainWindow) {
               mainWindow.webContents.send('trigger-folder-scan');
             }
@@ -165,50 +95,22 @@ function createWindow() {
           type: 'separator'
         },
         {
-          label: '終了(X)',
+          label: '終了',
           accelerator: 'CmdOrCtrl+Q',
-          role: 'quit' // 標準の終了動作
+          role: 'quit'
         }
       ]
     },
+    // Add other menus like '編集', '表示', 'ヘルプ' if needed
     {
-      label: '表示(V)', // View
+      label: '開発', // For debugging
       submenu: [
-        { label: '再読み込み(R)', role: 'reload' },
-        { label: '強制的に再読み込み(F)', role: 'forceReload' },
-        { type: 'separator' },
-        { label: '拡大(I)', role: 'zoomIn' },
-        { label: '縮小(O)', role: 'zoomOut' },
-        { label: '実際のサイズ(Z)', role: 'resetZoom' },
-        { type: 'separator' },
-        { label: 'フルスクリーン表示切り替え(L)', role: 'togglefullscreen' }
-      ]
-    },
-    {
-      label: '開発(D)', // Development
-      submenu: [
-        { label: '開発者ツール表示切替(T)', role: 'toggleDevTools' },
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
       ]
     }
   ];
-
-  // macOS の場合、先頭にアプリメニューを追加 (必須)
-  if (process.platform === 'darwin') {
-    menuTemplate.unshift({
-      label: app.getName(),
-      submenu: [
-        { label: `${app.getName()}について`, role: 'about' },
-        { type: 'separator' },
-        { label: 'サービス', role: 'services', submenu: [] },
-        { type: 'separator' },
-        { label: `${app.getName()}を隠す`, role: 'hide' },
-        { label: '他を隠す', role: 'hideOthers' },
-        { label: 'すべてを表示', role: 'unhide' },
-        { type: 'separator' },
-        { label: `${app.getName()}を終了`, role: 'quit' }
-      ]
-    });
-  }
 
   const menu = Menu.buildFromTemplate(menuTemplate);
   Menu.setApplicationMenu(menu);
@@ -674,20 +576,81 @@ async function scanDirectory(dirPath, targetWindow) {
                     console.warn(`Skipping ${normalizedPath} due to missing essential metadata (format, width, height). Sharp error: ${sharpError?.message}`);
                     skippedCount++;
                     return; // Skip this file if essential data is missing
-                }
+      }
 
                 // 3. Extract PNG text chunks (if applicable)
                 let pngInfoText = null;
                 if (metadata.format === 'png') {
-                    try {
+        try {
                         const pngBuffer = await fsp.readFile(normalizedPath);
                         const chunks = extractChunks(pngBuffer);
                         const textChunks = chunks.filter(chunk => chunk.name === 'tEXt' || chunk.name === 'iTXt' || chunk.name === 'zTXt');
-                        // Process chunks using the helper function
-                        pngInfoText = textChunks
-                            .map(chunk => processPngChunk(chunk, normalizedPath))
-                            .filter(text => text !== null) // Filter out null results (errors/non-text)
-                            .join('\n');
+                        pngInfoText = textChunks.map(chunk => {
+                            let key = '';
+                            let value = '';
+                            let separatorIndex = -1;
+
+                            if (chunk.name === 'tEXt') {
+                                separatorIndex = chunk.data.indexOf(0); // Null separator
+                if (separatorIndex !== -1) {
+                                    key = safeDecode(chunk.data.slice(0, separatorIndex), 'latin1');
+                                    value = safeDecode(chunk.data.slice(separatorIndex + 1), 'latin1');
+                }
+                            } else if (chunk.name === 'zTXt') {
+                                separatorIndex = chunk.data.indexOf(0);
+                                if (separatorIndex !== -1 && chunk.data[separatorIndex + 1] === 0) { // 0 = compression method deflate
+                                    key = safeDecode(chunk.data.slice(0, separatorIndex), 'latin1');
+                                    try {
+                                        const compressedValue = chunk.data.slice(separatorIndex + 2);
+                                        value = safeDecode(zlib.inflateSync(compressedValue), 'utf8');
+                                    } catch (e) {
+                                        console.warn(`Failed to decompress zTXt chunk for ${normalizedPath}: ${e.message}`);
+                                        value = '[decompression error]';
+                                    }
+                }
+                            } else if (chunk.name === 'iTXt') {
+                                separatorIndex = chunk.data.indexOf(0);
+                                if (separatorIndex !== -1) {
+                                    key = safeDecode(chunk.data.slice(0, separatorIndex), 'latin1');
+                                    // iTXt format: key\0compFlag\0compMethod\0langTag\0transKey\0value
+                                    // We are simplifying here, just trying to find the value part
+                                    const fields = [];
+                                    let current = separatorIndex + 1;
+                                    while (current < chunk.data.length) {
+                                        let nextNull = chunk.data.indexOf(0, current);
+                                        if (nextNull === -1) nextNull = chunk.data.length;
+                                        fields.push(chunk.data.slice(current, nextNull));
+                                        current = nextNull + 1;
+                                    }
+                                    // Assuming value is the last field and potentially compressed
+                                    if (fields.length >= 4) {
+                                        const compFlag = fields[0][0];
+                                        const compMethod = fields[1][0];
+                                        const langTag = safeDecode(fields[2], 'utf8');
+                                        const transKey = safeDecode(fields[3], 'utf8');
+                                        const rawValue = fields[4] || Buffer.alloc(0);
+
+                                        if (compFlag === 1 && compMethod === 0) { // Compressed with deflate
+                                            try {
+                                                value = safeDecode(zlib.inflateSync(rawValue), 'utf8');
+                                            } catch (e) {
+                                                 console.warn(`Failed to decompress iTXt chunk for ${normalizedPath}: ${e.message}`);
+                                                 value = '[decompression error]';
+                    }
+                                        } else if (compFlag === 0) { // Not compressed
+                                            value = safeDecode(rawValue, 'utf8');
+                                        } else {
+                                            value = '[unsupported compression]';
+                                        }
+                                    }
+                                }
+                            }
+                            // Limit key/value length to prevent huge strings
+                            const MAX_LEN = 200;
+                            const displayKey = key.length > MAX_LEN ? key.substring(0, MAX_LEN) + '...' : key;
+                            const displayValue = value.length > MAX_LEN ? value.substring(0, MAX_LEN) + '...' : value;
+                            return `${chunk.name}: ${displayKey}=${displayValue}`;
+                        }).join('\n');
                     } catch (err) {
                         console.error(`Could not extract PNG chunks for ${normalizedPath}: ${err.message}`);
                     }
@@ -711,11 +674,11 @@ async function scanDirectory(dirPath, targetWindow) {
             } catch (err) {
                 console.error(`Error processing file ${filePath}:`, err);
                 errorCount++;
-            }
+        }
             // Update progress every file
             if (processedCount % 10 === 0 || processedCount === totalFiles) { // Update less frequently
                 targetWindow.webContents.send('scan-status-update', `処理中 ${processedCount}/${totalFiles} (追加: ${addedCount}, スキップ: ${skippedCount}, エラー: ${errorCount})`);
-            }
+      }
         }));
 
         // Insert the batch data into the database

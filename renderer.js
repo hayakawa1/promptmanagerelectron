@@ -11,7 +11,8 @@
 //   }
 // });
 
-// const selectFolderButton = document.getElementById('select-folder-button');
+const selectFolderButton = document.getElementById('select-folder-button');
+const scanStatusParagraph = document.getElementById('scan-status');
 
 // Listen for status updates from the main process
 window.electronAPI.onScanStatusUpdate((statusMessage) => {
@@ -50,110 +51,36 @@ window.electronAPI.onTriggerFolderScan(async () => {
   }
 });
 
-// --- State Management Object ---
-const appState = {
-  pageSize: 150,
-  currentOffset: 0,
-  totalImages: 0,
-  isLoading: false,
-  selectedImageIds: new Set(),
-  lastClickedImageElement: null,
-  currentGridImages: [], // References to grid image elements
-  currentSearchTerm: '',
-  currentFolderFilter: '',
-  currentPngWordFilter: '',
-  debounceTimer: null
-};
+const imageGrid = document.getElementById('image-grid');
 
-// --- Constants ---
-// const PAGE_SIZE = 150;
+const PAGE_SIZE = 150;
+let currentOffset = 0;
+let totalImages = 0;
+let isLoading = false;
 
-// --- Selection State Management (moved into appState) ---
-// const selectedImageIds = new Set();
-// let lastClickedImageElement = null;
-// let currentGridImages = [];
+// --- Selection State Management ---
+const selectedImageIds = new Set();
+let lastClickedImageElement = null; // For Shift+Click range selection
+let currentGridImages = []; // Array to hold references to the img elements in the grid
 
-// --- Modal Elements (Declare globally, assign in DOMContentLoaded) ---
+// --- Modal Elements (Declare variables, get elements later) ---
 let modalOverlay = null;
 let modalImage = null;
 let modalCloseButton = null;
 let modalPngInfo = null;
+const deleteSelectedButton = document.getElementById('delete-selected-button');
+const memoInput = document.getElementById('memo-input');
+const updateMemoButton = document.getElementById('update-memo-button');
+const exportSelectedButton = document.getElementById('export-selected-button');
+const searchInput = document.getElementById('search-input'); // Get search input
+const folderFilter = document.getElementById('folder-filter'); // Get folder filter select
+const pngWordFilter = document.getElementById('png-word-filter'); // Get PNG word filter select
 
-// --- Toolbar/Control Elements (Declare globally, assign in DOMContentLoaded) ---
-let deleteSelectedButton = null;
-let memoInput = null;
-let updateMemoButton = null;
-let exportSelectedButton = null;
-let searchInput = null;
-let folderFilter = null;
-let pngWordFilter = null;
-let scanStatusParagraph = null;
-let imageGrid = null;
-
-// --- State Management Variables (moved into appState) ---
-// let currentOffset = 0;
-// let totalImages = 0;
-// let isLoading = false;
-// let currentSearchTerm = '';
-// let debounceTimer = null;
-// let currentFolderFilter = '';
-// let currentPngWordFilter = '';
-
-// --- Helper Functions ---
-
-function clearGridAndResetState() {
-    imageGrid.innerHTML = '';
-    appState.currentGridImages = [];
-    appState.selectedImageIds.clear();
-    appState.lastClickedImageElement = null;
-    appState.currentOffset = 0;
-    appState.totalImages = 0;
-    appState.isLoading = false;
-}
-
-function resetFiltersAndSearch() {
-    appState.currentSearchTerm = '';
-    searchInput.value = '';
-    appState.currentFolderFilter = '';
-    folderFilter.value = '';
-    appState.currentPngWordFilter = '';
-    pngWordFilter.value = '';
-}
-
-function updateStatusText(text) {
-    scanStatusParagraph.textContent = text;
-}
-
-function updateToolbarButtons() {
-    const hasSelection = appState.selectedImageIds.size > 0;
-    deleteSelectedButton.disabled = !hasSelection;
-    memoInput.disabled = !hasSelection;
-    updateMemoButton.disabled = !hasSelection;
-    exportSelectedButton.disabled = !hasSelection;
-    if (!hasSelection) {
-        memoInput.value = '';
-    }
-}
-
-function generateStatusMessage() {
-    if (appState.selectedImageIds.size > 0) {
-        return `${appState.selectedImageIds.size} 件選択中`;
-    }
-
-    const searchStatus = appState.currentSearchTerm ? `'${appState.currentSearchTerm}' の検索` : '';
-    const pngWordStatus = appState.currentPngWordFilter ? `PNG単語 '${appState.currentPngWordFilter}'` : '';
-    const folderStatus = appState.currentFolderFilter ? `フォルダ '${appState.currentFolderFilter}' 内` : '全てのフォルダ';
-    let baseStatus = '';
-
-    if (searchStatus) baseStatus += searchStatus;
-    if (pngWordStatus) baseStatus += (baseStatus ? ' + ' : '') + pngWordStatus;
-    if (!searchStatus && !pngWordStatus) baseStatus = folderStatus;
-    else if (appState.currentFolderFilter) baseStatus += ` (${folderStatus})`;
-
-    return `${baseStatus}: ${appState.currentOffset} / ${appState.totalImages} 件`;
-}
-
-// --- Core Logic Functions ---
+// --- State Management ---
+let currentSearchTerm = ''; // Store the current search term
+let debounceTimer = null; // Timer for debouncing search input
+let currentFolderFilter = ''; // Store the selected folder path
+let currentPngWordFilter = ''; // Store the selected PNG word
 
 // Function to open the modal and load PNG info
 async function openModal(imageId, imagePath) {
@@ -163,19 +90,29 @@ async function openModal(imageId, imagePath) {
         return;
     }
     try {
+        // Set image source immediately
         const encodedPath = encodeURIComponent(imagePath);
         modalImage.src = `atom://${encodedPath}`;
+
+        // Clear previous PNG info and show loading message
         modalPngInfo.textContent = 'PNG Info 読み込み中...';
         modalOverlay.style.display = 'block';
         console.log('[openModal] Modal overlay displayed. Fetching PNG info...');
 
+        // Fetch PNG info asynchronously
         const result = await window.electronAPI.getPngInfo(imageId);
         console.log('[openModal] Received PNG info result:', result);
+
         if (result.success) {
-            modalPngInfo.textContent = result.pngInfo || 'PNG Info はありません。';
+            if (result.pngInfo) {
+                modalPngInfo.textContent = result.pngInfo;
+            } else {
+                modalPngInfo.textContent = 'PNG Info はありません。'; // Handle case where png_info is null/empty
+            }
         } else {
             modalPngInfo.textContent = `エラー: ${result.message}`;
         }
+
     } catch (error) {
         console.error('[openModal] Error setting image source or fetching PNG info:', error);
         modalPngInfo.textContent = 'PNG Info の取得または表示中にエラーが発生しました。';
@@ -186,21 +123,43 @@ async function openModal(imageId, imagePath) {
 function closeModal() {
     modalOverlay.style.display = 'none';
     modalImage.src = '';
-    modalPngInfo.textContent = '';
+    modalPngInfo.textContent = ''; // Clear PNG info when closing
 }
+
+// Event listeners for closing the modal (Setup moved to DOMContentLoaded)
+// modalCloseButton.addEventListener('click', closeModal);
+// modalOverlay.addEventListener('click', (event) => { ... });
 
 // Function to update the visual selection state and relevant UI elements
 function updateSelectionVisuals() {
-    appState.currentGridImages.forEach(img => {
-        if (appState.selectedImageIds.has(parseInt(img.dataset.imageId, 10))) {
+    const hasSelection = selectedImageIds.size > 0;
+
+    currentGridImages.forEach(img => {
+        if (selectedImageIds.has(parseInt(img.dataset.imageId, 10))) {
             img.classList.add('selected');
         } else {
             img.classList.remove('selected');
         }
     });
-    updateToolbarButtons();
-    updateStatusText(generateStatusMessage());
-    console.log('Selected IDs:', Array.from(appState.selectedImageIds));
+
+    // Update button states based on selection
+    deleteSelectedButton.disabled = !hasSelection;
+    memoInput.disabled = !hasSelection;
+    updateMemoButton.disabled = !hasSelection;
+    exportSelectedButton.disabled = !hasSelection;
+
+    // Clear memo input if nothing is selected
+    if (!hasSelection) {
+        memoInput.value = '';
+    }
+
+    // Update status bar
+    const statusText = hasSelection
+        ? `${selectedImageIds.size} 件選択中`
+        : `表示中: ${currentOffset} / ${totalImages} 件`;
+    scanStatusParagraph.textContent = statusText;
+
+    console.log('Selected IDs:', Array.from(selectedImageIds));
 }
 
 // Function to create an image element
@@ -212,40 +171,55 @@ function createImageElement(image) {
     img.title = `${image.file_name}\nID: ${image.id}\nMemo: ${image.memo || ''}`;
     img.dataset.imageId = image.id;
 
+    // --- Enhanced Click Listener for Selection ---
     img.addEventListener('click', (event) => {
         const clickedId = parseInt(img.dataset.imageId, 10);
-        const isCtrlPressed = event.ctrlKey || event.metaKey;
+        const isCtrlPressed = event.ctrlKey || event.metaKey; // Ctrl (Win/Linux) or Cmd (Mac)
         const isShiftPressed = event.shiftKey;
 
-        if (isShiftPressed && appState.lastClickedImageElement) {
-            const lastClickedIndex = appState.currentGridImages.indexOf(appState.lastClickedImageElement);
-            const clickedIndex = appState.currentGridImages.indexOf(img);
+        if (isShiftPressed && lastClickedImageElement) {
+            // --- Shift+Click: Range Selection ---
+            const lastClickedIndex = currentGridImages.indexOf(lastClickedImageElement);
+            const clickedIndex = currentGridImages.indexOf(img);
+
             if (lastClickedIndex !== -1 && clickedIndex !== -1) {
+                // Determine range start and end
                 const startIndex = Math.min(lastClickedIndex, clickedIndex);
                 const endIndex = Math.max(lastClickedIndex, clickedIndex);
+
+                // If Ctrl is NOT pressed, clear previous selection first
                 if (!isCtrlPressed) {
-                    appState.selectedImageIds.clear();
+                    selectedImageIds.clear();
                 }
+
+                // Select images within the range
                 for (let i = startIndex; i <= endIndex; i++) {
-                    appState.selectedImageIds.add(parseInt(appState.currentGridImages[i].dataset.imageId, 10));
+                    selectedImageIds.add(parseInt(currentGridImages[i].dataset.imageId, 10));
                 }
             }
         } else if (isCtrlPressed) {
-            if (appState.selectedImageIds.has(clickedId)) {
-                appState.selectedImageIds.delete(clickedId);
+            // --- Ctrl/Cmd+Click: Toggle Selection ---
+            if (selectedImageIds.has(clickedId)) {
+                selectedImageIds.delete(clickedId);
             } else {
-                appState.selectedImageIds.add(clickedId);
+                selectedImageIds.add(clickedId);
             }
-            appState.lastClickedImageElement = img;
+            // Update last clicked for potential Shift+Click next
+            lastClickedImageElement = img;
         } else {
-            appState.selectedImageIds.clear();
-            appState.selectedImageIds.add(clickedId);
-            appState.lastClickedImageElement = img;
+            // --- Simple Click: Select Only This ---
+            selectedImageIds.clear();
+            selectedImageIds.add(clickedId);
+            // Update last clicked for potential Shift+Click next
+            lastClickedImageElement = img;
         }
-        updateSelectionVisuals();
+
+        updateSelectionVisuals(); // Update CSS classes based on the new selection set
     });
 
+    // --- Double Click Listener for Actual Size Modal ---
     img.addEventListener('dblclick', () => {
+        console.log('Double clicked image ID:', image.id, 'Path:', image.original_path);
         openModal(image.id, image.original_path);
     });
 
@@ -258,430 +232,376 @@ function displayImages(images) {
     images.forEach(image => {
         const imgElement = createImageElement(image);
         fragment.appendChild(imgElement);
-        appState.currentGridImages.push(imgElement);
+        currentGridImages.push(imgElement);
     });
     imageGrid.appendChild(fragment);
 }
 
-// Function to populate a dropdown filter
-async function populateFilter(element, apiCall, valueField, textField, currentFilterValue) {
-    console.log(`Populating filter: ${element.id}...`);
+// Function to populate the folder filter dropdown
+async function populateFolderFilter() {
+    console.log('Populating folder filter...');
     try {
-        const result = await apiCall();
+        const result = await window.electronAPI.getDistinctFolders();
         if (result.success) {
-            const defaultOptionText = element.id === 'folder-filter' ? '全てのフォルダ' : '全てのPNG単語';
-            element.innerHTML = `<option value="">${defaultOptionText}</option>`; // Keep default option
-            const items = element.id === 'folder-filter' ? result.folders : result.words;
-            items.forEach(item => {
+            // Clear existing options except the first one ("All Folders")
+            folderFilter.innerHTML = '<option value="">全てのフォルダ</option>';
+            result.folders.forEach(folder => {
                 const option = document.createElement('option');
-                option.value = item; // Assuming item itself is the value
-                option.textContent = item; // Display the item
-                element.appendChild(option);
+                option.value = folder;
+                option.textContent = folder; // Display the full path for now
+                folderFilter.appendChild(option);
             });
-            element.value = currentFilterValue;
-            console.log(`Filter ${element.id} populated.`);
+            folderFilter.value = currentFolderFilter; // Restore previous selection if applicable
+            console.log('Folder filter populated.');
         } else {
-            console.error(`Failed to populate ${element.id}:`, result.message);
+            console.error('Failed to get distinct folders:', result.message);
+            // Handle error (e.g., disable filter?)
         }
     } catch (error) {
-        console.error(`Error calling API for ${element.id}:`, error);
+        console.error('Error calling getDistinctFolders:', error);
     }
 }
 
-// Function to load images (refactored)
-async function loadImages(isLoadMore = false) {
-    if (appState.isLoading || (isLoadMore && appState.currentOffset >= appState.totalImages)) {
+// Function to populate the PNG word filter dropdown
+async function populatePngWordFilter() {
+    console.log('Populating PNG word filter...');
+    try {
+        const result = await window.electronAPI.getUniquePngWords();
+        if (result.success) {
+            pngWordFilter.innerHTML = '<option value="">全てのPNG単語</option>';
+            result.words.forEach(word => {
+                const option = document.createElement('option');
+                option.value = word;
+                option.textContent = word;
+                pngWordFilter.appendChild(option);
+            });
+            pngWordFilter.value = currentPngWordFilter; // Restore previous selection
+            console.log('PNG word filter populated.');
+        } else {
+            console.error('Failed to get unique PNG words:', result.message);
+            // Handle error (e.g., disable filter?)
+        }
+    } catch (error) {
+        console.error('Error calling getUniquePngWords:', error);
+    }
+}
+
+// Function to load images (add folderPath parameter)
+async function loadImages(offset = 0, limit = PAGE_SIZE, searchTerm = currentSearchTerm, folderPath = currentFolderFilter, pngWord = currentPngWordFilter) {
+    if (isLoading || (offset > 0 && currentOffset >= totalImages)) {
         return;
     }
-
-    const offsetToLoad = isLoadMore ? appState.currentOffset : 0;
-    const options = {
-        limit: appState.pageSize,
-        offset: offsetToLoad,
-        term: appState.currentSearchTerm || null,
-        folderPath: appState.currentFolderFilter || null,
-        pngWord: appState.currentPngWordFilter || null
-    };
-
-    console.log(`[loadImages] Attempting to load:`, options);
-    appState.isLoading = true;
-    updateStatusText(isLoadMore ? 'さらに読み込み中...' : '画像を読み込み中...');
+    console.log(`[loadImages] Attempting to load: offset=${offset}, limit=${limit}, term='${searchTerm}', folder='${folderPath}', pngWord='${pngWord}'`);
+    isLoading = true;
+    // Update loading message based on active filters
+    let loadingMsg = '画像を読み込み中...';
+    if (searchTerm) loadingMsg = `'${searchTerm}' を検索中...`;
+    else if (pngWord) loadingMsg = `PNG単語 '${pngWord}' でフィルタ中...`;
+    else if (folderPath) loadingMsg = `フォルダ '${folderPath}' を表示中...`;
+    scanStatusParagraph.textContent = loadingMsg;
 
     try {
         let result;
-        const isSearchingOrFiltering = options.term || options.folderPath || options.pngWord;
+        const options = { limit, offset };
+        if (searchTerm) options.term = searchTerm;
+        if (folderPath) options.folderPath = folderPath;
+        if (pngWord) options.pngWord = pngWord; // Add pngWord to options
 
-        if (isSearchingOrFiltering) {
+        // Call searchImages if any filter is active
+        if (searchTerm || folderPath || pngWord) {
+            console.log(`[loadImages] Calling window.electronAPI.searchImages...`, options);
             result = await window.electronAPI.searchImages(options);
-        } else {
-            result = await window.electronAPI.getImages({ limit: options.limit, offset: options.offset });
+        } else { // Otherwise call getImages
+            console.log(`[loadImages] Calling window.electronAPI.getImages...`, options);
+            result = await window.electronAPI.getImages(options);
         }
         console.log('[loadImages] Received result:', result);
 
         if (result.success) {
-            if (!isLoadMore) {
-                clearGridAndResetState(); // Clear grid only for initial load/filter change
+            // If it's a new search (offset is 0), clear the grid first
+            if (offset === 0) {
+                imageGrid.innerHTML = '';
+                currentGridImages = [];
             }
             displayImages(result.images);
-            appState.currentOffset = offsetToLoad + result.images.length;
-            appState.totalImages = result.total;
+            currentOffset = offset + result.images.length; // Update offset correctly
+            totalImages = result.total;
+
+            // Update status bar text to reflect all active filters
+            const searchStatus = searchTerm ? `'${searchTerm}' の検索` : '';
+            const pngWordStatus = pngWord ? `PNG単語 '${pngWord}'` : '';
+            const folderStatus = folderPath ? `フォルダ '${folderPath}' 内` : '全てのフォルダ';
+            let baseStatus = '';
+            if (searchStatus) baseStatus += searchStatus;
+            if (pngWordStatus) baseStatus += (baseStatus ? ' + ' : '') + pngWordStatus;
+            if (!searchStatus && !pngWordStatus) baseStatus = folderStatus;
+            else if (folderPath) baseStatus += ` (${folderStatus})`;
+
+            scanStatusParagraph.textContent = `${baseStatus}: ${currentOffset} / ${totalImages} 件`;
+
         } else {
             console.error('[loadImages] Failed to load/search images:', result.message);
-            updateStatusText(`エラー: ${result.message}`);
-            if (!isLoadMore) {
-                clearGridAndResetState();
+            scanStatusParagraph.textContent = `エラー: ${result.message}`;
+            // If search failed, maybe show all images?
+             if (offset === 0) {
+                 imageGrid.innerHTML = ''; // Clear grid on search error for offset 0
+                 currentGridImages = [];
              }
         }
     } catch (error) {
         console.error('[loadImages] Error calling API or processing results:', error);
-        updateStatusText('データ取得中に予期せぬエラーが発生しました。');
-         if (!isLoadMore) {
-            clearGridAndResetState();
-         }
+        scanStatusParagraph.textContent = 'データ取得中に予期せぬエラーが発生しました。';
     } finally {
-        appState.isLoading = false;
-        updateStatusText(generateStatusMessage()); // Update status after loading
         console.log(`[loadImages] Setting isLoading to false.`);
+        isLoading = false;
     }
 }
 
-// --- Event Listeners ---
-
-// Listen for status updates from the main process
-window.electronAPI.onScanStatusUpdate(async (statusMessage) => {
-  updateStatusText(statusMessage);
-  if (statusMessage.startsWith('完了:')) {
-    console.log('Scan finished, clearing search, updating filters, and reloading image grid...');
-    resetFiltersAndSearch();
-    await populateFilter(folderFilter, window.electronAPI.getDistinctFolders, null, null, appState.currentFolderFilter);
-    await populateFilter(pngWordFilter, window.electronAPI.getUniquePngWords, null, null, appState.currentPngWordFilter);
-    clearGridAndResetState(); // Ensure grid is cleared before loading
-    loadImages(); // Reload all images
-  }
-});
-
-// Listen for menu trigger from main process
-window.electronAPI.onTriggerFolderScan(async () => {
-  updateStatusText('フォルダを選択中...');
-  try {
-    const result = await window.electronAPI.selectFolderFromMenu();
-    if (!result.success && !result.cancelled) {
-        updateStatusText(`エラー: ${result.message}`);
-    } else if (result.cancelled) {
-        updateStatusText('フォルダ選択がキャンセルされました。');
-    }
-    // Success status is handled by onScanStatusUpdate
-  } catch (error) {
-    console.error('Error triggering folder selection:', error);
-    updateStatusText('処理中に予期せぬエラーが発生しました。');
-  }
-});
-
-// --- Filter Change Handlers ---
+// --- Folder Filter Listener ---
 folderFilter.addEventListener('change', () => {
-    appState.currentFolderFilter = folderFilter.value;
-    console.log('Folder filter changed:', appState.currentFolderFilter);
-    loadImages(); // Reload images with new filter
+    currentFolderFilter = folderFilter.value;
+    console.log('Folder filter changed:', currentFolderFilter);
+    // Reset pagination and reload images with the new filter
+    currentOffset = 0;
+    totalImages = 0;
+    loadImages(0, PAGE_SIZE, currentSearchTerm, currentFolderFilter, currentPngWordFilter); // Pass pngWord filter too
 });
 
+// --- PNG Word Filter Listener ---
 pngWordFilter.addEventListener('change', () => {
-    appState.currentPngWordFilter = pngWordFilter.value;
-    console.log('PNG word filter changed:', appState.currentPngWordFilter);
-    loadImages(); // Reload images with new filter
+    currentPngWordFilter = pngWordFilter.value;
+    console.log('PNG word filter changed:', currentPngWordFilter);
+    // Reset pagination and reload images with the new filter
+    currentOffset = 0;
+    totalImages = 0;
+    loadImages(0, PAGE_SIZE, currentSearchTerm, currentFolderFilter, currentPngWordFilter);
 });
 
 // --- Search Input Listener with Debounce ---
 searchInput.addEventListener('input', () => {
-    clearTimeout(appState.debounceTimer);
+    clearTimeout(debounceTimer);
     const searchTerm = searchInput.value.trim();
-    appState.debounceTimer = setTimeout(() => {
-        if (appState.currentSearchTerm !== searchTerm) { // Only reload if term changed
+    debounceTimer = setTimeout(() => {
         console.log(`Search input changed: "${searchTerm}"`);
-            appState.currentSearchTerm = searchTerm;
-            loadImages(); // Reload images with new search term
-        }
+        currentSearchTerm = searchTerm;
+        currentOffset = 0;
+        totalImages = 0;
+        // Pass both folder and pngWord filters to loadImages
+        loadImages(0, PAGE_SIZE, currentSearchTerm, currentFolderFilter, currentPngWordFilter);
     }, 500);
 });
 
 // --- Infinite Scroll Logic ---
 window.addEventListener('scroll', () => {
     const threshold = 300;
-    if (!appState.isLoading && appState.currentOffset < appState.totalImages &&
+    if (!isLoading && currentOffset < totalImages &&
         (window.innerHeight + window.scrollY) >= document.body.offsetHeight - threshold)
-    {   // Load more images
-        console.log('Scroll threshold reached, loading more images...');
-        loadImages(true); // Pass true to indicate loading more
+    {   // Pass all filters
+        console.log('Scroll threshold reached, loading more images for term:', currentSearchTerm, 'folder:', currentFolderFilter, 'pngWord:', currentPngWordFilter);
+        loadImages(currentOffset, PAGE_SIZE, currentSearchTerm, currentFolderFilter, currentPngWordFilter);
     }
 });
 
-// --- Toolbar Action Button Listeners ---
+// Initial load
+document.addEventListener('DOMContentLoaded', async () => { // Make async to await folder population
+    console.log('[DOMContentLoaded] Event fired.');
+    try {
+        // Get Modal elements now that DOM is ready
+        modalOverlay = document.getElementById('modal-overlay');
+        modalImage = document.getElementById('modal-image');
+        modalCloseButton = document.getElementById('modal-close-button');
+        modalPngInfo = document.getElementById('modal-png-info');
+
+        // Add modal close listeners now that elements are found
+        if (modalCloseButton) {
+            modalCloseButton.addEventListener('click', closeModal);
+        } else {
+            console.error('[DOMContentLoaded] modalCloseButton not found!');
+        }
+        if (modalOverlay) {
+            modalOverlay.addEventListener('click', (event) => {
+                if (event.target === modalOverlay) {
+                    closeModal();
+                }
+            });
+        } else {
+             console.error('[DOMContentLoaded] modalOverlay not found!');
+        }
+
+        // Reset grid and state
+        imageGrid.innerHTML = '';
+        currentGridImages = [];
+        selectedImageIds.clear();
+        lastClickedImageElement = null;
+        currentOffset = 0;
+        totalImages = 0;
+        isLoading = false;
+        currentSearchTerm = ''; // Ensure search term is clear on initial load
+        searchInput.value = ''; // Clear search input visually
+        currentFolderFilter = ''; // Reset folder filter
+        folderFilter.value = ''; // Reset dropdown visually
+        currentPngWordFilter = ''; // Reset PNG word filter state
+        pngWordFilter.value = ''; // Reset PNG word dropdown visually
+
+        // Populate filters initially
+        await populateFolderFilter();
+        await populatePngWordFilter(); // Populate PNG word filter
+
+        console.log('[DOMContentLoaded] State reset. Calling loadImages...');
+        loadImages(); // Load all images initially
+        console.log('[DOMContentLoaded] loadImages() called.');
+    } catch (error) {
+        console.error('[DOMContentLoaded] Error during initial setup:', error);
+    }
+});
+
+// When scan finishes, reload grid, clear search, AND update folder filter
+window.electronAPI.onScanStatusUpdate(async (statusMessage) => { // Make async
+  scanStatusParagraph.textContent = statusMessage;
+  if (statusMessage.startsWith('完了:')) {
+    console.log('Scan finished, clearing search, updating folders, and reloading image grid...');
+    // ... reset state (grid, selection, pagination, search) ...
+    currentFolderFilter = ''; // Reset folder filter state
+    folderFilter.value = ''; // Reset dropdown visually
+    currentPngWordFilter = ''; // Reset PNG word filter state
+    pngWordFilter.value = ''; // Reset PNG word dropdown visually
+
+    // Update folder list after scan
+    await populateFolderFilter();
+
+    loadImages(); // Reload all images
+  }
+});
+
+// --- Add Delete Button Listener ---
 deleteSelectedButton.addEventListener('click', async () => {
-    const idsToDelete = Array.from(appState.selectedImageIds);
-    if (idsToDelete.length === 0) return;
+    const idsToDelete = Array.from(selectedImageIds);
+    if (idsToDelete.length === 0) {
+        console.warn('Delete button clicked, but no images selected.');
+        return;
+    }
 
     console.log('Requesting deletion for IDs:', idsToDelete);
-    updateToolbarButtons(); // Disable buttons
-    updateStatusText('削除処理中...');
+    deleteSelectedButton.disabled = true; // Disable while processing
+    scanStatusParagraph.textContent = '削除処理中...';
 
     try {
         const result = await window.electronAPI.deleteImages(idsToDelete);
         console.log('Delete result:', result);
-        updateStatusText(result.message);
+
         if (result.success) {
-            appState.currentGridImages = appState.currentGridImages.filter(img => {
+            scanStatusParagraph.textContent = result.message;
+            // Remove deleted image elements from the grid
+            currentGridImages = currentGridImages.filter(img => {
                 const imgId = parseInt(img.dataset.imageId, 10);
                 if (idsToDelete.includes(imgId)) {
-                    img.remove();
-                    return false;
+                    img.remove(); // Remove from DOM
+                    return false; // Remove from array
                 }
                 return true;
             });
-            appState.selectedImageIds.clear();
-            appState.lastClickedImageElement = null;
-            appState.totalImages -= result.deletedCount;
+            selectedImageIds.clear(); // Clear selection
+            lastClickedImageElement = null;
+            // Update total count (important for infinite scroll)
+            totalImages -= result.deletedCount;
+            updateSelectionVisuals(); // Update button state and status bar
+        } else {
+            // Show error message (e.g., user cancelled, DB error)
+            scanStatusParagraph.textContent = `削除エラー: ${result.message}`;
+            // Re-enable button if deletion failed but selection still exists
+            deleteSelectedButton.disabled = selectedImageIds.size === 0;
         }
     } catch (error) {
         console.error('Error calling deleteImages:', error);
-        updateStatusText('画像の削除中に予期せぬエラーが発生しました。');
-    } finally {
-        updateSelectionVisuals(); // Update UI based on new state
+        scanStatusParagraph.textContent = '画像の削除中に予期せぬエラーが発生しました。';
+        deleteSelectedButton.disabled = selectedImageIds.size === 0; // Re-enable button
     }
 });
 
+// Function to update the title attribute of an image element (optional)
+function updateImageTitle(imageId, newMemo) {
+    const imgElement = currentGridImages.find(img => parseInt(img.dataset.imageId, 10) === imageId);
+    if (imgElement) {
+        // Assuming title format: "filename\nID: id\nMemo: memo"
+        const parts = imgElement.title.split('\n');
+        if (parts.length >= 3) {
+            imgElement.title = `${parts[0]}\n${parts[1]}\nMemo: ${newMemo || ''}`;
+        }
+    }
+}
+
+// --- Add Memo Update Button Listener ---
 updateMemoButton.addEventListener('click', async () => {
-    const idsToUpdate = Array.from(appState.selectedImageIds);
+    const idsToUpdate = Array.from(selectedImageIds);
     const newMemo = memoInput.value;
-    if (idsToUpdate.length === 0) return;
+
+    if (idsToUpdate.length === 0) {
+        console.warn('Update memo button clicked, but no images selected.');
+        return;
+    }
 
     console.log(`Requesting memo update for IDs: ${idsToUpdate.join(', ')} with memo: "${newMemo}"`);
-    updateToolbarButtons(); // Disable buttons
-    updateStatusText('メモ更新中...');
+    updateMemoButton.disabled = true; // Disable while processing
+    memoInput.disabled = true;
+    scanStatusParagraph.textContent = 'メモ更新中...';
 
     try {
         const result = await window.electronAPI.updateMemos({ imageIds: idsToUpdate, memo: newMemo });
         console.log('Memo update result:', result);
-        updateStatusText(result.message);
+
         if (result.success) {
-            idsToUpdate.forEach(id => {
-                const imgElement = appState.currentGridImages.find(img => parseInt(img.dataset.imageId, 10) === id);
-                if (imgElement) {
-                    const parts = imgElement.title.split('\n');
-                    if (parts.length >= 3) {
-                        imgElement.title = `${parts[0]}\n${parts[1]}\nMemo: ${newMemo || ''}`;
-                    }
-                }
-            });
-            memoInput.value = ''; // Clear input on success
+            scanStatusParagraph.textContent = result.message;
+            // Optionally update titles of affected images in the grid
+            idsToUpdate.forEach(id => updateImageTitle(id, newMemo));
+            // Clear memo input after successful update
+            memoInput.value = '';
+            // Re-enable based on selection (which hasn't changed)
+            memoInput.disabled = selectedImageIds.size === 0;
+            updateMemoButton.disabled = selectedImageIds.size === 0;
+        } else {
+            scanStatusParagraph.textContent = `メモ更新エラー: ${result.message}`;
+            // Re-enable based on selection
+            memoInput.disabled = selectedImageIds.size === 0;
+            updateMemoButton.disabled = selectedImageIds.size === 0;
         }
     } catch (error) {
         console.error('Error calling updateMemos:', error);
-        updateStatusText('メモの更新中に予期せぬエラーが発生しました。');
-    } finally {
-        updateSelectionVisuals(); // Update UI based on new state
+        scanStatusParagraph.textContent = 'メモの更新中に予期せぬエラーが発生しました。';
+        memoInput.disabled = selectedImageIds.size === 0;
+        updateMemoButton.disabled = selectedImageIds.size === 0;
     }
 });
 
+// --- Add Export Button Listener ---
 exportSelectedButton.addEventListener('click', async () => {
-    const idsToExport = Array.from(appState.selectedImageIds);
-    if (idsToExport.length === 0) return;
+    const idsToExport = Array.from(selectedImageIds);
+    if (idsToExport.length === 0) {
+        console.warn('Export button clicked, but no images selected.');
+        return;
+    }
 
     console.log('Requesting export for IDs:', idsToExport);
-    updateToolbarButtons(); // Disable buttons
-    updateStatusText('選択した画像を保存中...');
+    exportSelectedButton.disabled = true; // Disable while processing
+    // Disable other action buttons too?
+    deleteSelectedButton.disabled = true;
+    updateMemoButton.disabled = true;
+    memoInput.disabled = true;
+    scanStatusParagraph.textContent = '選択した画像を保存中...';
 
     try {
         const result = await window.electronAPI.exportSelectedImages(idsToExport);
         console.log('Export result:', result);
-        updateStatusText(result.message);
+        // Display result message in status bar regardless of success/failure
+        scanStatusParagraph.textContent = result.message;
+        // Optionally clear selection after export?
+        // selectedImageIds.clear();
+        // updateSelectionVisuals();
+
     } catch (error) {
         console.error('Error calling exportSelectedImages:', error);
-        updateStatusText('画像の保存中に予期せぬエラーが発生しました。');
+        scanStatusParagraph.textContent = '画像の保存中に予期せぬエラーが発生しました。';
     } finally {
-        updateSelectionVisuals(); // Re-enable buttons etc.
-    }
-});
-
-// --- Initialization ---
-document.addEventListener('DOMContentLoaded', async () => {
-    console.log('[DOMContentLoaded] Event fired.');
-
-    // --- Assign Element References NOW that DOM is ready ---
-    modalOverlay = document.getElementById('modal-overlay');
-    modalImage = document.getElementById('modal-image');
-    modalCloseButton = document.getElementById('modal-close-button');
-    modalPngInfo = document.getElementById('modal-png-info');
-
-    deleteSelectedButton = document.getElementById('delete-selected-button');
-    memoInput = document.getElementById('memo-input');
-    updateMemoButton = document.getElementById('update-memo-button');
-    exportSelectedButton = document.getElementById('export-selected-button');
-    searchInput = document.getElementById('search-input');
-    folderFilter = document.getElementById('folder-filter');
-    pngWordFilter = document.getElementById('png-word-filter');
-    scanStatusParagraph = document.getElementById('scan-status');
-    imageGrid = document.getElementById('image-grid');
-
-    // Check if essential elements were found
-    if (!imageGrid || !scanStatusParagraph || !folderFilter || !pngWordFilter || !searchInput || !deleteSelectedButton || !updateMemoButton || !exportSelectedButton || !memoInput) {
-        console.error('Essential UI elements not found! Aborting initialization.');
-        const bodyElement = document.querySelector('body');
-        if (bodyElement) {
-            const errorDiv = document.createElement('div');
-            errorDiv.textContent = 'UI要素の読み込みに失敗しました。アプリケーションを再起動してください。';
-            errorDiv.style.color = 'red';
-            errorDiv.style.padding = '20px';
-            bodyElement.insertBefore(errorDiv, bodyElement.firstChild);
-        }
-        return; // Stop further execution
-    }
-    // --- End Element Assignment ---
-
-    try {
-        // --- Setup Event Listeners NOW that elements are assigned ---
-
-        // Modal listeners
-        if (modalCloseButton) modalCloseButton.addEventListener('click', closeModal);
-        if (modalOverlay) modalOverlay.addEventListener('click', (event) => { if (event.target === modalOverlay) closeModal(); });
-
-        // Filter Change Handlers
-        folderFilter.addEventListener('change', () => {
-            appState.currentFolderFilter = folderFilter.value;
-            console.log('Folder filter changed:', appState.currentFolderFilter);
-            loadImages(); // Reload images with new filter
-        });
-
-        pngWordFilter.addEventListener('change', () => {
-            appState.currentPngWordFilter = pngWordFilter.value;
-            console.log('PNG word filter changed:', appState.currentPngWordFilter);
-            loadImages(); // Reload images with new filter
-        });
-
-        // Search Input Listener with Debounce
-        searchInput.addEventListener('input', () => {
-            clearTimeout(appState.debounceTimer);
-            const searchTerm = searchInput.value.trim();
-            appState.debounceTimer = setTimeout(() => {
-                if (appState.currentSearchTerm !== searchTerm) { // Only reload if term changed
-                    console.log(`Search input changed: "${searchTerm}"`);
-                    appState.currentSearchTerm = searchTerm;
-                    loadImages(); // Reload images with new search term
-                }
-            }, 500);
-        });
-
-        // Infinite Scroll Logic
-        window.addEventListener('scroll', () => {
-            const threshold = 300;
-            if (!appState.isLoading && appState.currentOffset < appState.totalImages &&
-                (window.innerHeight + window.scrollY) >= document.body.offsetHeight - threshold)
-            {   // Load more images
-                console.log('Scroll threshold reached, loading more images...');
-                loadImages(true); // Pass true to indicate loading more
-            }
-        });
-
-        // Toolbar Action Button Listeners
-        deleteSelectedButton.addEventListener('click', async () => {
-            const idsToDelete = Array.from(appState.selectedImageIds);
-            if (idsToDelete.length === 0) return;
-
-            console.log('Requesting deletion for IDs:', idsToDelete);
-            updateToolbarButtons(); // Disable buttons
-            updateStatusText('削除処理中...');
-
-            try {
-                const result = await window.electronAPI.deleteImages(idsToDelete);
-                console.log('Delete result:', result);
-                updateStatusText(result.message);
-                if (result.success) {
-                    appState.currentGridImages = appState.currentGridImages.filter(img => {
-                        const imgId = parseInt(img.dataset.imageId, 10);
-                        if (idsToDelete.includes(imgId)) {
-                            img.remove();
-                            return false;
-                        }
-                        return true;
-                    });
-                    appState.selectedImageIds.clear();
-                    appState.lastClickedImageElement = null;
-                    appState.totalImages -= result.deletedCount;
-                }
-            } catch (error) {
-                console.error('Error calling deleteImages:', error);
-                updateStatusText('画像の削除中に予期せぬエラーが発生しました。');
-            } finally {
-                updateSelectionVisuals(); // Update UI based on new state
-            }
-        });
-
-        updateMemoButton.addEventListener('click', async () => {
-            const idsToUpdate = Array.from(appState.selectedImageIds);
-            const newMemo = memoInput.value;
-            if (idsToUpdate.length === 0) return;
-
-            console.log(`Requesting memo update for IDs: ${idsToUpdate.join(', ')} with memo: "${newMemo}"`);
-            updateToolbarButtons(); // Disable buttons
-            updateStatusText('メモ更新中...');
-
-            try {
-                const result = await window.electronAPI.updateMemos({ imageIds: idsToUpdate, memo: newMemo });
-                console.log('Memo update result:', result);
-                updateStatusText(result.message);
-                if (result.success) {
-                    idsToUpdate.forEach(id => {
-                        const imgElement = appState.currentGridImages.find(img => parseInt(img.dataset.imageId, 10) === id);
-                        if (imgElement) {
-                            const parts = imgElement.title.split('\n');
-                            if (parts.length >= 3) {
-                                imgElement.title = `${parts[0]}\n${parts[1]}\nMemo: ${newMemo || ''}`;
-                            }
-                        }
-                    });
-                    memoInput.value = ''; // Clear input on success
-                }
-            } catch (error) {
-                console.error('Error calling updateMemos:', error);
-                updateStatusText('メモの更新中に予期せぬエラーが発生しました。');
-            } finally {
-                updateSelectionVisuals(); // Update UI based on new state
-            }
-        });
-
-        exportSelectedButton.addEventListener('click', async () => {
-            const idsToExport = Array.from(appState.selectedImageIds);
-            if (idsToExport.length === 0) return;
-
-            console.log('Requesting export for IDs:', idsToExport);
-            updateToolbarButtons(); // Disable buttons
-            updateStatusText('選択した画像を保存中...');
-
-            try {
-                const result = await window.electronAPI.exportSelectedImages(idsToExport);
-                console.log('Export result:', result);
-                updateStatusText(result.message);
-            } catch (error) {
-                console.error('Error calling exportSelectedImages:', error);
-                updateStatusText('画像の保存中に予期せぬエラーが発生しました。');
-            } finally {
-                updateSelectionVisuals(); // Re-enable buttons etc.
-            }
-        });
-        // --- End Event Listener Setup ---
-
-        // Initial setup
-        clearGridAndResetState();
-        resetFiltersAndSearch();
-        updateToolbarButtons();
-        updateStatusText('初期化中...');
-
-        // Populate filters
-        await populateFilter(folderFilter, window.electronAPI.getDistinctFolders, null, null, appState.currentFolderFilter);
-        await populateFilter(pngWordFilter, window.electronAPI.getUniquePngWords, null, null, appState.currentPngWordFilter);
-
-        console.log('[DOMContentLoaded] State reset. Calling loadImages...');
-        loadImages(); // Load initial images
-    } catch (error) {
-        console.error('[DOMContentLoaded] Error during initial setup:', error);
-        updateStatusText('初期化エラーが発生しました。');
+        // Re-enable buttons based on current selection state
+        updateSelectionVisuals();
     }
 });
