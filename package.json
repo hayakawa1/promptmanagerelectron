@@ -17,7 +17,7 @@
   "dependencies": {
     "better-sqlite3": "^9.0.0",
     "glob": "^10.0.0",
-    "sharp": "^0.33.0",
-    "png-chunks-extract": "^1.0.0"
+    "png-chunks-extract": "^1.0.0",
+    "sharp": "^0.33.0"
   }
 }

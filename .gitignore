@@ -24,4 +24,7 @@ lerna-debug.log*
 
 # OS generated files
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# Project specific ignores
+仕様書.MD 

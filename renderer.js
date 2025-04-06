@@ -492,73 +492,151 @@ document.addEventListener('DOMContentLoaded', async () => { // Make async to awa
              console.error('[DOMContentLoaded] modalOverlay not found!');
         }
 
-        // Add listener for the modal save memo button
-        if (modalSaveMemoButton && modalMemoInput) {
-            modalSaveMemoButton.addEventListener('click', async () => {
+        // Add modal save memo listener
+        if (modalSaveMemoButton) {
+             modalSaveMemoButton.addEventListener('click', async () => {
                 if (currentModalImageId === null) {
-                    console.error('Modal Save Memo Error: No image ID is currently set.');
+                    console.error('[Modal Save] No image ID associated with the modal.');
                     return;
                 }
-                const newMemo = modalMemoInput.value;
-                modalSaveMemoButton.disabled = true; // Disable button during save
-                console.log(`Modal: Requesting memo update for ID: ${currentModalImageId} with memo: "${newMemo}"`);
-
+                const memoText = modalMemoInput.value;
+                console.log(`[Modal Save] Saving memo "${memoText}" for image ID ${currentModalImageId}`);
                 try {
-                    // Use the existing updateMemos API, sending a single ID in an array
-                    const result = await window.electronAPI.updateMemos({ imageIds: [currentModalImageId], memo: newMemo });
-                    console.log('Modal Memo update result:', result);
-
+                    // Call updateMemos (requires main process implementation for single update)
+                    // Or adapt appendMemos if suitable
+                    // For now, let's assume updateMemos exists and handles single updates
+                    const result = await window.electronAPI.updateMemos({ ids: [currentModalImageId], memo: memoText });
                     if (result.success) {
-                        alert('メモを保存しました。'); // Simple feedback
-                        // Update the title of the image in the main grid
-                        updateImageTitle(currentModalImageId, newMemo);
-                        // Optionally close modal after save?
-                        // closeModal();
+                        console.log('[Modal Save] Memo updated successfully.');
+                        // Update the grid item's title as well
+                        updateImageTitle(currentModalImageId, memoText);
+                         // Optionally close modal after save
+                         // closeModal();
                     } else {
+                        console.error('[Modal Save] Error updating memo:', result.message);
                         alert(`メモの保存に失敗しました: ${result.message}`);
                     }
                 } catch (error) {
-                    console.error('Error calling updateMemos from modal:', error);
-                    alert('メモの保存中に予期せぬエラーが発生しました。');
-                } finally {
-                    modalSaveMemoButton.disabled = false; // Re-enable button
+                    console.error('[Modal Save] Error calling updateMemos:', error);
+                    alert('メモの保存中にエラーが発生しました。');
                 }
             });
         } else {
-             console.error('[DOMContentLoaded] modalMemoInput or modalSaveMemoButton not found!');
+             console.error('[DOMContentLoaded] modalSaveMemoButton not found!');
         }
 
-        // Reset grid and state
-        imageGrid.innerHTML = '';
-        currentGridImages = [];
-        selectedImageIds.clear();
-        lastClickedImageElement = null;
-        currentOffset = 0;
-        totalImages = 0;
-        isLoading = false;
-        currentSearchTerm = ''; // Ensure search term is clear on initial load
-        searchInput.value = ''; // Clear search input visually
-        currentFolderFilter = ''; // Reset folder filter
-        folderFilter.value = ''; // Reset dropdown visually
-        currentPngWordFilter = ''; // Reset PNG word filter state
-        pngWordFilter.value = ''; // Reset PNG word dropdown visually
-        // IDフィルターと並び順をリセット
-        currentMinId = '';
-        minIdInput.value = '';
-        currentMaxId = '';
-        maxIdInput.value = '';
-        currentSortOrder = 'ASC';
-        sortOrderSelect.value = 'ASC';
-
-        // Populate filters initially
+        // Populate filters
         await populateFolderFilter();
-        await populatePngWordFilter(); // Populate PNG word filter
+        await populatePngWordFilter();
 
-        console.log('[DOMContentLoaded] State reset. Calling loadImages...');
-        loadImages(); // Load all images initially
-        console.log('[DOMContentLoaded] loadImages() called.');
+        // Initial image load
+        console.log('[DOMContentLoaded] Triggering initial image load...');
+        loadImages(0, PAGE_SIZE, '', '', '', '', '', 'ASC'); // Load initial set with default filters
+
+        // --- Keyboard Shortcuts ---
+        window.addEventListener('keydown', async (event) => {
+            // Check if a modal is open or if the focus is on an input element
+            if (modalOverlay?.style.display === 'block' ||
+                document.activeElement instanceof HTMLInputElement ||
+                document.activeElement instanceof HTMLTextAreaElement ||
+                document.activeElement instanceof HTMLSelectElement) {
+                // Don't trigger shortcuts if modal is open or interacting with form elements
+                return;
+            }
+
+            const hasSelection = selectedImageIds.size > 0;
+
+            // --- S Key: Export Selected Images ---
+            if (event.key === 's' || event.key === 'S') {
+                event.preventDefault(); // Prevent default browser save action if any
+                if (hasSelection) {
+                    const idsToExport = Array.from(selectedImageIds);
+                    console.log(`S key pressed. Exporting ${idsToExport.length} selected images.`);
+
+                    // Disable buttons during export (optional, mimics button click behavior)
+                    // exportSelectedButton.disabled = true;
+                    // deleteSelectedButton.disabled = true;
+                    // appendMemoButton.disabled = true;
+                    // memoInput.disabled = true;
+                    scanStatusParagraph.textContent = '選択した画像を保存中...';
+
+                    try {
+                        const result = await window.electronAPI.exportSelectedImages(idsToExport);
+                        console.log('Export result via S key:', result);
+                        // Display result message in status bar regardless of success/failure
+                        scanStatusParagraph.textContent = result.message;
+
+                    } catch (error) {
+                        console.error('Error calling exportSelectedImages via S key:', error);
+                        scanStatusParagraph.textContent = '画像の保存中に予期せぬエラーが発生しました。';
+                    } finally {
+                        // Re-enable buttons based on current selection state (if disabled above)
+                        // updateSelectionVisuals();
+                    }
+                } else {
+                    console.log('S key pressed, but no images selected for export.');
+                    scanStatusParagraph.textContent = 'エクスポートする画像を選択してください。';
+                }
+            }
+
+            // --- D Key: Delete Selected Images ---
+            if (event.key === 'd' || event.key === 'D') {
+                event.preventDefault(); // Prevent default browser actions if any
+                if (hasSelection) {
+                    const idsToDelete = Array.from(selectedImageIds);
+                    console.log(`D key pressed. Deleting ${idsToDelete.length} selected images.`);
+
+                     // Confirmation dialog (optional but recommended)
+                    /*
+                    const userConfirmed = confirm(`${idsToDelete.length} 件の画像を削除しますか？この操作は元に戻せません。`);
+                    if (!userConfirmed) {
+                        console.log('Deletion cancelled by user.');
+                        return;
+                    }
+                    */
+
+                    try {
+                        const result = await window.electronAPI.deleteImages(idsToDelete);
+                        if (result.success) {
+                            console.log('Images deleted successfully via D key.');
+                            scanStatusParagraph.textContent = `${idsToDelete.length} 件の画像を削除しました。`;
+
+                            // Remove images from the grid
+                            idsToDelete.forEach(id => {
+                                const imgElement = currentGridImages.find(img => parseInt(img.dataset.imageId, 10) === id);
+                                if (imgElement) {
+                                    imgElement.remove();
+                                }
+                            });
+                            // Update the currentGridImages array
+                            currentGridImages = currentGridImages.filter(img => !idsToDelete.includes(parseInt(img.dataset.imageId, 10)));
+
+                            // Clear selection and update UI
+                            selectedImageIds.clear();
+                            lastClickedImageElement = null;
+                            updateSelectionVisuals();
+                            // Potentially update totalImages count if known, or trigger a reload if necessary
+                            // totalImages -= idsToDelete.length; // Approximate update
+                            // updateSelectionVisuals(); // Call again to update status bar with new total (if needed)
+
+                        } else {
+                            console.error('Error deleting images via D key:', result.message);
+                             scanStatusParagraph.textContent = `画像の削除に失敗しました: ${result.message}`;
+                        }
+                    } catch (error) {
+                        console.error('Error calling deleteImages via D key:', error);
+                        scanStatusParagraph.textContent = '画像の削除中にエラーが発生しました。';
+                    }
+                } else {
+                     console.log('D key pressed, but no images selected.');
+                    scanStatusParagraph.textContent = '削除する画像を選択してください。';
+                }
+            }
+        });
+
     } catch (error) {
         console.error('[DOMContentLoaded] Error during initial setup:', error);
+        scanStatusParagraph.textContent = '初期化中にエラーが発生しました。';
     }
 });
 
