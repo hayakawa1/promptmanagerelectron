@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Electron Image Viewer</title>
+    <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' atom:">
+    <style>
+        body { font-family: sans-serif; margin: 10px; }
+        #image-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); /* Responsive grid */
+            gap: 10px;
+            margin-top: 15px;
+        }
+        #image-grid img {
+            width: 100%;
+            height: 150px; /* Fixed height for consistency */
+            object-fit: cover; /* Scale image nicely */
+            border: 1px solid #ccc;
+            cursor: pointer;
+            transition: transform 0.2s ease;
+        }
+        #image-grid img:hover {
+            transform: scale(1.05);
+        }
+        /* Style for selected images */
+        #image-grid img.selected {
+            outline: 3px solid dodgerblue;
+            outline-offset: -2px; /* Offset outline slightly inward */
+        }
+        #load-more-container {
+            text-align: center;
+            margin-top: 20px;
+        }
+        button:disabled { cursor: not-allowed; opacity: 0.6; }
+        .status-bar { /* Basic status bar styling */
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            background-color: #f0f0f0;
+            padding: 5px 10px;
+            border-top: 1px solid #ccc;
+            font-size: 0.9em;
+        }
+
+        /* Modal Styles */
+        #modal-overlay {
+            display: none; /* Hidden by default */
+            position: fixed; /* Stay in place */
+            z-index: 1000; /* Sit on top */
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto; /* Enable scroll if needed */
+            background-color: rgba(0,0,0,0.8); /* Black w/ opacity */
+        }
+        #image-modal {
+            position: relative; /* For positioning the close button */
+            background-color: #fefefe;
+            margin: 5% auto; /* 5% from the top and centered */
+            padding: 20px;
+            border: 1px solid #888;
+            width: 80%; /* Could be more dynamic */
+            max-width: 1000px; /* Limit max width */
+            text-align: center; /* Center the image */
+        }
+        #modal-image {
+            max-width: 100%;
+            max-height: 80vh; /* Limit image height to viewport height */
+            display: block;
+            margin: 0 auto;
+        }
+        #modal-close-button {
+            position: absolute;
+            top: 10px;
+            right: 25px;
+            color: #aaa;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        #modal-close-button:hover,
+        #modal-close-button:focus {
+            color: black;
+            text-decoration: none;
+        }
+        /* Styles for info in modal */
+        .modal-info {
+            margin-top: 15px;
+            text-align: left;
+            max-height: 20vh; /* Limit height for info section */
+            overflow-y: auto; /* Add scroll if content overflows */
+            background-color: #f8f8f8;
+            padding: 10px;
+            border-top: 1px solid #eee;
+        }
+        .modal-info h4 {
+            margin-top: 0;
+            margin-bottom: 5px;
+        }
+        .modal-info pre {
+            white-space: pre-wrap; /* Wrap long lines */
+            word-wrap: break-word; /* Break words if necessary */
+            font-size: 0.9em;
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <h1>Electron Image Viewer</h1>
+    <div class="toolbar">
+        <button id="select-folder-button">フォルダを選択してスキャン</button>
+        <!-- Folder Filter Dropdown -->
+        <select id="folder-filter" style="margin-left: 10px;">
+            <option value="">全てのフォルダ</option>
+            <!-- Options will be populated dynamically -->
+        </select>
+        <input type="text" id="search-input" placeholder="ファイル名, メモ, PNG Info で検索..." style="margin-left: 10px; width: 200px;"/>
+        <!-- Selection Actions -->
+        <span style="margin-left: auto;">
+            <input type="text" id="memo-input" placeholder="選択した画像のメモを入力..." disabled />
+            <button id="update-memo-button" disabled>メモを更新</button>
+            <button id="delete-selected-button" disabled>選択画像を削除</button>
+            <button id="export-selected-button" disabled>選択画像を保存</button>
+        </span>
+    </div>
+    <p>IPC Test: <button id="ipc-test">Ping Main</button> <span id="ipc-result"></span></p>
+
+    <div id="image-grid"></div>
+
+    <!-- Status Bar -->
+    <div id="scan-status" class="status-bar">Ready</div>
+
+    <script src="./renderer.js"></script>
+
+    <!-- Image Modal Structure (Initially Hidden) -->
+    <div id="modal-overlay">
+        <div id="image-modal">
+            <span id="modal-close-button">&times;</span>
+            <img id="modal-image" src="" alt="Actual Size Image" />
+            <div class="modal-info">
+                <h4>PNG Info:</h4>
+                <pre id="modal-png-info">読み込み中...</pre>
+            </div>
+        </div>
+    </div>
+</body>
+</html> 

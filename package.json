@@ -1,0 +1,23 @@
+{
+  "name": "electron-image-viewer",
+  "version": "1.0.0",
+  "description": "A local image viewer and manager application.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-rebuild": "^3.2.9"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.0.0",
+    "glob": "^10.0.0",
+    "sharp": "^0.33.0",
+    "png-chunks-extract": "^1.0.0"
+  }
+}
