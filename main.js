@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, protocol } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, protocol, Menu } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises'); // Import fs.promises
@@ -12,6 +12,78 @@ const zlib = require('node:zlib'); // Import zlib
 function safeDecode(buffer, encoding = 'latin1') {
   const cleanedBuffer = buffer.filter(byte => byte !== 0);
   return cleanedBuffer.toString(encoding);
+}
+
+// Helper function to process PNG text chunks
+function processPngChunk(chunk, filePath) {
+  const chunkName = chunk.name;
+  const chunkData = chunk.data; // Buffer
+  let key = '';
+  let value = '';
+  let separatorIndex = -1;
+
+  try {
+    if (chunkName === 'tEXt') {
+      separatorIndex = chunkData.indexOf(0); // Null separator
+      if (separatorIndex !== -1) {
+        key = safeDecode(chunkData.slice(0, separatorIndex), 'latin1');
+        value = safeDecode(chunkData.slice(separatorIndex + 1), 'latin1');
+      }
+    } else if (chunkName === 'zTXt') {
+      separatorIndex = chunkData.indexOf(0);
+      if (separatorIndex !== -1 && chunkData[separatorIndex + 1] === 0) { // 0 = compression method deflate
+        key = safeDecode(chunkData.slice(0, separatorIndex), 'latin1');
+        try {
+          const compressedValue = chunkData.slice(separatorIndex + 2);
+          value = safeDecode(zlib.inflateSync(compressedValue), 'utf8');
+        } catch (e) {
+          console.warn(`Failed to decompress zTXt chunk ('${key}') for ${filePath}: ${e.message}`);
+          value = '[decompression error]';
+        }
+      }
+    } else if (chunkName === 'iTXt') {
+      separatorIndex = chunkData.indexOf(0);
+      if (separatorIndex !== -1) {
+        key = safeDecode(chunkData.slice(0, separatorIndex), 'latin1');
+        const fields = [];
+        let current = separatorIndex + 1;
+        while (current < chunkData.length) {
+          let nextNull = chunkData.indexOf(0, current);
+          if (nextNull === -1) nextNull = chunkData.length;
+          fields.push(chunkData.slice(current, nextNull));
+          current = nextNull + 1;
+        }
+        if (fields.length >= 4) {
+          const compFlag = fields[0][0];
+          const compMethod = fields[1][0];
+          const rawValue = fields[4] || Buffer.alloc(0);
+          if (compFlag === 1 && compMethod === 0) { // Compressed with deflate
+            try {
+              value = safeDecode(zlib.inflateSync(rawValue), 'utf8');
+            } catch (e) {
+              console.warn(`Failed to decompress iTXt chunk ('${key}') for ${filePath}: ${e.message}`);
+              value = '[decompression error]';
+            }
+          } else if (compFlag === 0) { // Not compressed
+            value = safeDecode(rawValue, 'utf8');
+          } else {
+            value = '[unsupported compression]';
+          }
+        }
+      }
+    }
+
+    if (key || value) { // Only return if we got something
+        // Limit key/value length to prevent huge strings
+        const MAX_LEN = 200;
+        const displayKey = key.length > MAX_LEN ? key.substring(0, MAX_LEN) + '...' : key;
+        const displayValue = value.length > MAX_LEN ? value.substring(0, MAX_LEN) + '...' : value;
+        return `${chunkName}: ${displayKey}=${displayValue}`;
+    }
+  } catch (err) {
+      console.error(`Error decoding chunk ${chunkName} for ${filePath}:`, err);
+  }
+  return null; // Return null if no valid text extracted or on error
 }
 
 // データベースファイルのパスをプロジェクトルートに変更
@@ -58,8 +130,11 @@ try {
 // 画像ファイルの拡張子リスト
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'tiff'];
 
+let mainWindow; // Make win accessible globally or pass it around
+
 function createWindow() {
-  const win = new BrowserWindow({
+  // Keep a reference to the window object
+  mainWindow = new BrowserWindow({
     width: 800,
     height: 600,
     webPreferences: {
@@ -67,10 +142,77 @@ function createWindow() {
     }
   });
 
-  win.loadFile('index.html');
+  mainWindow.loadFile('index.html');
 
-  // デバッグ用に開発者ツールを開く (オプション)
-  // win.webContents.openDevTools();
+  // Optional: Open DevTools
+  // mainWindow.webContents.openDevTools();
+
+  // --- Create Application Menu ---
+  const menuTemplate = [
+    {
+      label: 'ファイル(F)', // File
+      submenu: [
+        {
+          label: 'フォルダをスキャンして画像を追加(O)...',
+          accelerator: 'CmdOrCtrl+O',
+          click: async () => {
+            if (mainWindow) {
+              mainWindow.webContents.send('trigger-folder-scan');
+            }
+          }
+        },
+        {
+          type: 'separator'
+        },
+        {
+          label: '終了(X)',
+          accelerator: 'CmdOrCtrl+Q',
+          role: 'quit' // 標準の終了動作
+        }
+      ]
+    },
+    {
+      label: '表示(V)', // View
+      submenu: [
+        { label: '再読み込み(R)', role: 'reload' },
+        { label: '強制的に再読み込み(F)', role: 'forceReload' },
+        { type: 'separator' },
+        { label: '拡大(I)', role: 'zoomIn' },
+        { label: '縮小(O)', role: 'zoomOut' },
+        { label: '実際のサイズ(Z)', role: 'resetZoom' },
+        { type: 'separator' },
+        { label: 'フルスクリーン表示切り替え(L)', role: 'togglefullscreen' }
+      ]
+    },
+    {
+      label: '開発(D)', // Development
+      submenu: [
+        { label: '開発者ツール表示切替(T)', role: 'toggleDevTools' },
+      ]
+    }
+  ];
+
+  // macOS の場合、先頭にアプリメニューを追加 (必須)
+  if (process.platform === 'darwin') {
+    menuTemplate.unshift({
+      label: app.getName(),
+      submenu: [
+        { label: `${app.getName()}について`, role: 'about' },
+        { type: 'separator' },
+        { label: 'サービス', role: 'services', submenu: [] },
+        { type: 'separator' },
+        { label: `${app.getName()}を隠す`, role: 'hide' },
+        { label: '他を隠す', role: 'hideOthers' },
+        { label: 'すべてを表示', role: 'unhide' },
+        { type: 'separator' },
+        { label: `${app.getName()}を終了`, role: 'quit' }
+      ]
+    });
+  }
+
+  const menu = Menu.buildFromTemplate(menuTemplate);
+  Menu.setApplicationMenu(menu);
+  // --- End Menu Creation ---
 }
 
 app.whenReady().then(() => {
@@ -118,9 +260,6 @@ app.on('will-quit', () => {
     console.log('Database connection closed.');
   }
 });
-
-// IPC ハンドラ (例)
-ipcMain.handle('ping', () => 'pong');
 
 // データベースに登録されているユニークなフォルダパスを取得する IPC ハンドラ
 ipcMain.handle('get-distinct-folders', async () => {
@@ -348,15 +487,15 @@ ipcMain.handle('get-png-info', async (event, imageId) => {
 });
 
 // 画像を検索する IPC ハンドラ (フォルダフィルタ追加)
-ipcMain.handle('search-images', async (event, { term, limit = 50, offset = 0, folderPath = null } = {}) => {
+ipcMain.handle('search-images', async (event, { term, limit = 50, offset = 0, folderPath = null, pngWord = null } = {}) => {
   const searchTerm = term ? `%${term}%` : null;
-  console.log(`IPC: Received search-images request (term='${term}', limit=${limit}, offset=${offset}, folder='${folderPath}')`);
+  const searchPngWord = pngWord ? `%${pngWord}%` : null;
+  console.log(`IPC: Received search-images request (term='${term}', pngWord='${pngWord}', limit=${limit}, offset=${offset}, folder='${folderPath}')`);
 
-  if (!searchTerm && !folderPath) {
-      // Both empty, act like get-images without folder filter
-      console.log('IPC: Search term and folder are empty, using get-images logic (all).');
-      // Delegate to get-images (or just return all, similar logic)
-      // For simplicity, just return empty, client should call get-images
+  // Ensure at least one filter criteria is present
+  if (!searchTerm && !folderPath && !searchPngWord) {
+      console.log('IPC: Search term, folder, and PNG word are empty, using get-images logic (all).');
+      // Delegate or return empty, assuming client calls get-images for the 'all' case
        return { success: true, images: [], total: 0 };
   }
 
@@ -366,9 +505,16 @@ ipcMain.handle('search-images', async (event, { term, limit = 50, offset = 0, fo
     const countParams = [];
 
     if (searchTerm) {
-      whereClauses.push('(file_name LIKE ? OR memo LIKE ? OR png_info LIKE ?)');
-      params.push(searchTerm, searchTerm, searchTerm);
-      countParams.push(searchTerm, searchTerm, searchTerm);
+      whereClauses.push('(file_name LIKE ? OR memo LIKE ?)');
+      params.push(searchTerm, searchTerm);
+      countParams.push(searchTerm, searchTerm);
+    }
+    if (searchPngWord) {
+      // Search for the specific word within the png_info text
+      // Using LIKE for flexibility, adjust if exact match needed
+      whereClauses.push('png_info LIKE ?');
+      params.push(searchPngWord);
+      countParams.push(searchPngWord);
     }
     if (folderPath) {
       whereClauses.push('folder_path = ?');
@@ -399,7 +545,7 @@ ipcMain.handle('search-images', async (event, { term, limit = 50, offset = 0, fo
     const images = stmt.all(params);
     const { total } = countStmt.get(countParams);
 
-    console.log(`IPC: Search returning ${images.length} images (total found: ${total})`);
+    console.log(`IPC: Returning ${images.length} search results (total: ${total})`);
     return { success: true, images: images, total: total };
 
   } catch (err) {
@@ -408,298 +554,214 @@ ipcMain.handle('search-images', async (event, { term, limit = 50, offset = 0, fo
   }
 });
 
-// フォルダ選択と画像スキャン・DB登録を行う IPC ハンドラ
-ipcMain.handle('select-folder', async (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win) return { success: false, message: 'ウィンドウが見つかりません。' };
+// Add an IPC listener in the main process to handle the menu click event
+ipcMain.handle('select-folder-from-menu', async () => {
+  if (!mainWindow) return { success: false, message: 'メインウィンドウが見つかりません。' };
+  // Reuse the selectFolder logic
+  return await selectFolder(mainWindow);
+});
 
-  const result = await dialog.showOpenDialog(win, {
+// Modified selectFolder to be callable from menu (pass window object)
+async function selectFolder(targetWindow) {
+  if (!targetWindow) {
+    console.error('[selectFolder] Error: targetWindow is missing');
+    return { success: false, message: '操作対象のウィンドウが見つかりません。' };
+  }
+  console.log('[selectFolder] Called');
+  targetWindow.webContents.send('scan-status-update', 'フォルダ選択ダイアログを開いています...');
+
+  const result = await dialog.showOpenDialog(targetWindow, {
     properties: ['openDirectory']
   });
 
   if (result.canceled || result.filePaths.length === 0) {
-    console.log('Folder selection cancelled.');
-    return { success: false, message: 'フォルダ選択がキャンセルされました。' };
+    console.log('[selectFolder] Folder selection cancelled');
+    targetWindow.webContents.send('scan-status-update', 'フォルダ選択がキャンセルされました。');
+    return { success: false, cancelled: true };
   }
 
   const folderPath = result.filePaths[0];
-  console.log(`Selected folder: ${folderPath}`);
+  console.log('[selectFolder] Selected folder:', folderPath);
+  targetWindow.webContents.send('scan-status-update', `フォルダ ${folderPath} のスキャンを開始します...`);
 
-  let initialRegisteredCount = 0;
-  let initialSkippedCount = 0;
-  let metadataUpdatedCount = 0;
-  let metadataErrorCount = 0;
-  let pngInfoExtractedCount = 0;
-  let pngInfoErrorCount = 0;
-  let processedFilesForMetadata = 0;
-  let processedFilesForPngInfo = 0;
+  // スキャン処理を非同期で開始
+  scanDirectory(folderPath, targetWindow); // Pass window to update status
+
+  return { success: true, path: folderPath };
+}
+
+// Modified scanDirectory to accept window object for status updates
+async function scanDirectory(dirPath, targetWindow) {
+  // ... (rest of the scanDirectory logic remains the same,
+  //        but use targetWindow.webContents.send instead of event.sender)
+
+  let processedCount = 0;
+  let addedCount = 0;
+  let skippedCount = 0;
+  let errorCount = 0;
+  let totalFiles = 0;
 
   try {
-    // --- 1. Initial Scan and Basic Info Registration ---
-    win.webContents.send('scan-status-update', '画像ファイルを検索中...'); // Notify renderer
-    const pattern = `${folderPath.replace(/\\/g, '/')}/**/*.@(${IMAGE_EXTENSIONS.join('|')})`;
-    // Get only absolute paths (strings) from glob
-    const imageFilePaths = await glob(pattern, { nocase: true, absolute: true });
-    const totalFiles = imageFilePaths.length;
-    win.webContents.send('scan-status-update', `${totalFiles} 件の画像ファイルを検出しました。基本情報を登録中...`);
-    console.log(`Found ${totalFiles} image files.`);
+    const pattern = `**/*.{${IMAGE_EXTENSIONS.join(',')}}`;
+    console.log(`Scanning directory: ${dirPath} with pattern: ${pattern}`);
+    targetWindow.webContents.send('scan-status-update', `ファイル一覧を取得中: ${dirPath}`);
 
-    if (totalFiles === 0) {
-      win.webContents.send('scan-status-update', '対象フォルダに画像ファイルが見つかりませんでした。');
-      return { success: true, folderPath, fileCount: 0, message: '対象フォルダに画像ファイルが見つかりませんでした。' };
-    }
+    const files = await glob(pattern, {
+      cwd: dirPath,
+      absolute: true,
+      nocase: true,
+      follow: false, // シンボリックリンクは追わない
+      nodir: true, // ディレクトリ自体は結果に含めない
+      ignore: '**/node_modules/**' // node_modulesを除外
+    });
+    totalFiles = files.length;
+    console.log(`Found ${totalFiles} potential image files.`);
+    targetWindow.webContents.send('scan-status-update', `${totalFiles} 件の候補ファイルを検出。処理を開始します...`);
 
     const insertStmt = db.prepare(`
-      INSERT INTO images (original_path, file_name, folder_path, file_size, created_at_os, registered_at)
-      VALUES (@original_path, @file_name, @folder_path, @file_size, @created_at_os, CURRENT_TIMESTAMP)
-      ON CONFLICT(original_path) DO UPDATE SET
-        file_name = excluded.file_name,
-        folder_path = excluded.folder_path,
-        file_size = excluded.file_size,
-        -- created_at_os は基本的に更新しないか、必要に応じて更新ポリシーを検討
-        registered_at = CURRENT_TIMESTAMP
+      INSERT OR IGNORE INTO images
+        (original_path, file_name, folder_path, file_size, created_at_os, width, height, format, metadata_json, png_info)
+      VALUES (@original_path, @file_name, @folder_path, @file_size, @created_at_os, @width, @height, @format, @metadata_json, @png_info)
     `);
 
-    const registeredPaths = [];
-    // Use transaction for bulk inserts
-    const insertMany = db.transaction((paths) => {
-      for (const filePath of paths) {
-        // console.log('Processing file path:', filePath); // Keep for debugging if needed
+    const insertMany = db.transaction((images) => {
+      let localAddedCount = 0;
+      for (const imgData of images) {
         try {
-          const stats = fs.statSync(filePath);
-          // Check if it's a file
-          if (!stats.isFile()) {
-            console.log(`Skipping non-file: ${filePath}`);
-            initialSkippedCount++;
-            continue;
-          }
-
-          const fileName = path.basename(filePath);
-
-          const fileData = {
-            original_path: filePath,
-            file_name: fileName,
-            folder_path: path.dirname(filePath),
-            file_size: stats.size,
-            created_at_os: Math.floor(stats.birthtimeMs)
-          };
-
-          insertStmt.run(fileData);
-          initialRegisteredCount++;
-          registeredPaths.push(filePath); // Store path for metadata processing
-
+            const info = insertStmt.run(imgData);
+            if (info.changes > 0) {
+                localAddedCount++;
+            }
         } catch (err) {
-          // Handle errors like permission denied for fs.statSync or db insertion
-          if (err.code === 'ENOENT') { // File might have been deleted between glob and stat
-              console.warn(`File not found during stat, skipping: ${filePath}`);
-          } else {
-              console.error(`Failed to process file ${filePath}:`, err);
-          }
-          initialSkippedCount++;
+            console.error(`Error inserting image ${imgData.original_path}:`, err);
+            errorCount++;
         }
+      }
+      return localAddedCount;
+    });
+
+    const batchSize = 100; // Process files in batches
+    for (let i = 0; i < files.length; i += batchSize) {
+        const batchFiles = files.slice(i, i + batchSize);
+        const batchData = [];
+
+        await Promise.all(batchFiles.map(async (filePath) => {
+            processedCount++;
+            try {
+                const absolutePath = path.resolve(filePath);
+                const normalizedPath = path.normalize(absolutePath);
+                const fileName = path.basename(normalizedPath);
+                const folderPath = path.dirname(normalizedPath);
+
+                // 1. Get file stats
+                const stats = await fsp.stat(normalizedPath);
+                const fileSize = stats.size;
+                // Electronではms単位だが、Unixタイムスタンプ(秒)に変換
+                const createdAtOs = Math.floor(stats.birthtimeMs / 1000);
+
+                // 2. Get image metadata using sharp
+                let metadata = {};
+                let sharpError = null;
+                try {
+                  metadata = await sharp(normalizedPath).metadata();
+                } catch (err) {
+                    console.warn(`Sharp could not read metadata for ${normalizedPath}: ${err.message}`);
+                    sharpError = err;
+                }
+
+                // Check if metadata extraction was successful
+                if (!metadata || !metadata.format || !metadata.width || !metadata.height) {
+                    console.warn(`Skipping ${normalizedPath} due to missing essential metadata (format, width, height). Sharp error: ${sharpError?.message}`);
+                    skippedCount++;
+                    return; // Skip this file if essential data is missing
+                }
+
+                // 3. Extract PNG text chunks (if applicable)
+                let pngInfoText = null;
+                if (metadata.format === 'png') {
+                    try {
+                        const pngBuffer = await fsp.readFile(normalizedPath);
+                        const chunks = extractChunks(pngBuffer);
+                        const textChunks = chunks.filter(chunk => chunk.name === 'tEXt' || chunk.name === 'iTXt' || chunk.name === 'zTXt');
+                        // Process chunks using the helper function
+                        pngInfoText = textChunks
+                            .map(chunk => processPngChunk(chunk, normalizedPath))
+                            .filter(text => text !== null) // Filter out null results (errors/non-text)
+                            .join('\n');
+                    } catch (err) {
+                        console.error(`Could not extract PNG chunks for ${normalizedPath}: ${err.message}`);
+                    }
+                }
+
+                // 4. Prepare data for insertion
+                const imageRecord = {
+                    original_path: normalizedPath,
+                    file_name: fileName,
+                    folder_path: folderPath,
+                    file_size: fileSize,
+                    created_at_os: createdAtOs,
+                    width: metadata.width,
+                    height: metadata.height,
+                    format: metadata.format,
+                    metadata_json: JSON.stringify(metadata), // Store all sharp metadata
+                    png_info: pngInfoText // Store extracted text chunks
+                };
+                batchData.push(imageRecord);
+
+            } catch (err) {
+                console.error(`Error processing file ${filePath}:`, err);
+                errorCount++;
+            }
+            // Update progress every file
+            if (processedCount % 10 === 0 || processedCount === totalFiles) { // Update less frequently
+                targetWindow.webContents.send('scan-status-update', `処理中 ${processedCount}/${totalFiles} (追加: ${addedCount}, スキップ: ${skippedCount}, エラー: ${errorCount})`);
+            }
+        }));
+
+        // Insert the batch data into the database
+        if (batchData.length > 0) {
+            const batchAdded = insertMany(batchData);
+            addedCount += batchAdded;
+            console.log(`Inserted batch [${i}-${i+batchSize-1}], added: ${batchAdded}`);
+        }
+    }
+
+    console.log(`Scan finished for ${dirPath}. Total: ${totalFiles}, Added: ${addedCount}, Skipped: ${skippedCount}, Errors: ${errorCount}`);
+    targetWindow.webContents.send('scan-status-update', `完了: ${addedCount} 件の新規画像を追加 (スキップ: ${skippedCount}, エラー: ${errorCount})`);
+
+  } catch (err) {
+    console.error(`Error scanning directory ${dirPath}:`, err);
+    targetWindow.webContents.send('scan-status-update', `エラー: スキャン中に問題が発生しました - ${err.message}`);
+  }
+}
+
+// Function to get unique words from png_info
+function getUniquePngWords() {
+  try {
+    const stmt = db.prepare('SELECT DISTINCT png_info FROM images WHERE png_info IS NOT NULL AND png_info != \'\'');
+    const results = stmt.all();
+    const wordSet = new Set();
+    const separators = /[,\s\n=:]+/; // Comma, space, newline, equals, colon
+
+    results.forEach(row => {
+      if (row.png_info) {
+        // Split by separators, filter out empty strings, and trim
+        const words = row.png_info.split(separators)
+                            .map(word => word.trim().toLowerCase())
+                            .filter(word => word.length > 1); // Filter out very short/empty strings
+        words.forEach(word => wordSet.add(word));
       }
     });
 
-    // Execute the transaction
-    insertMany(imageFilePaths);
-
-    console.log(`Initial registration complete. Registered: ${initialRegisteredCount}, Skipped: ${initialSkippedCount}`);
-    // Check if any files were actually registered before proceeding
-    if (initialRegisteredCount === 0) {
-        const finalMessage = `画像を登録/更新できませんでした。(${initialSkippedCount} 件スキップ)`;
-        win.webContents.send('scan-status-update', `完了: ${finalMessage}`);
-        return {
-            success: true, // Technically the operation didn't fail, just found nothing to add
-            folderPath,
-            fileCount: totalFiles,
-            registeredCount: 0,
-            skippedCount: initialSkippedCount,
-            metadataUpdatedCount: 0,
-            metadataErrorCount: 0,
-            pngInfoExtractedCount: 0,
-            pngInfoErrorCount: 0,
-            message: finalMessage
-        };
-    }
-    win.webContents.send('scan-status-update', `基本情報の登録完了。メタデータ/PNG情報を取得中... (0/${initialRegisteredCount})`);
-
-    // --- 2. Metadata & PNG Info Fetching and Update ---
-    const updateMetaStmt = db.prepare(`
-      UPDATE images
-      SET width = @width,
-          height = @height,
-          format = @format,
-          metadata_json = @metadata_json
-          -- png_info は別のステップで更新
-      WHERE original_path = @original_path
-    `);
-    const updatePngInfoStmt = db.prepare(`
-      UPDATE images
-      SET png_info = @png_info
-      WHERE original_path = @original_path
-    `);
-
-    for (const filePath of registeredPaths) {
-      let metaSuccess = false;
-      let pngSuccess = false;
-
-      // --- 2a. Fetch Metadata (sharp) ---
-      try {
-        const metadata = await sharp(filePath).metadata();
-        const metaDataToStore = {
-          width: metadata.width,
-          height: metadata.height,
-          format: metadata.format,
-          // 必要に応じて他のメタデータを選択して JSON 文字列として保存
-          metadata_json: JSON.stringify({
-            space: metadata.space,
-            channels: metadata.channels,
-            depth: metadata.depth,
-            density: metadata.density,
-            isProgressive: metadata.isProgressive,
-            hasProfile: metadata.hasProfile,
-            hasAlpha: metadata.hasAlpha,
-            orientation: metadata.orientation,
-            exif: metadata.exif, // Buffer -> Base64 or similar if needed
-            icc: metadata.icc,   // Buffer -> Base64 or similar if needed
-            iptc: metadata.iptc, // Buffer -> Base64 or similar if needed
-            xmp: metadata.xmp,   // Buffer -> Base64 or similar if needed
-            // 必要ならさらに追加
-          }),
-          original_path: filePath,
-        };
-        updateMetaStmt.run(metaDataToStore);
-        metadataUpdatedCount++;
-        metaSuccess = true;
-      } catch (err) {
-        console.error(`Failed to get metadata for ${filePath}:`, err);
-        metadataErrorCount++;
-      }
-
-      // --- 2b. Extract PNG Info (Using png-chunks-extract and manual decode) ---
-      if (path.extname(filePath).toLowerCase() === '.png') {
-        try {
-          const buffer = await fsp.readFile(filePath);
-          const chunks = extractChunks(buffer);
-          const textChunks = [];
-
-          for (const chunk of chunks) {
-            const chunkName = chunk.name;
-            const chunkData = Buffer.from(chunk.data);
-
-            try {
-              if (chunkName === 'tEXt') {
-                const separatorIndex = chunkData.indexOf(0);
-                if (separatorIndex !== -1) {
-                  const keyword = safeDecode(chunkData.subarray(0, separatorIndex), 'latin1');
-                  const text = safeDecode(chunkData.subarray(separatorIndex + 1), 'latin1');
-                  textChunks.push({ keyword: keyword, text: text });
-                }
-              } else if (chunkName === 'zTXt') {
-                const separatorIndex = chunkData.indexOf(0);
-                if (separatorIndex !== -1 && chunkData[separatorIndex + 1] === 0) {
-                  const keyword = safeDecode(chunkData.subarray(0, separatorIndex), 'latin1');
-                  const compressedText = chunkData.subarray(separatorIndex + 2);
-                  const decompressedText = zlib.inflateSync(compressedText);
-                  const text = safeDecode(decompressedText, 'latin1');
-                  textChunks.push({ keyword: keyword, text: text });
-                }
-              } else if (chunkName === 'iTXt') {
-                let currentIndex = 0;
-                const keywordEnd = chunkData.indexOf(0, currentIndex);
-                if (keywordEnd === -1) continue;
-                const keyword = safeDecode(chunkData.subarray(currentIndex, keywordEnd), 'latin1');
-                currentIndex = keywordEnd + 1;
-                if (currentIndex + 2 > chunkData.length) continue;
-                const compressionFlag = chunkData[currentIndex];
-                const compressionMethod = chunkData[currentIndex + 1];
-                currentIndex += 2;
-                const langTagEnd = chunkData.indexOf(0, currentIndex);
-                if (langTagEnd === -1) continue;
-                currentIndex = langTagEnd + 1;
-                const transKeywordEnd = chunkData.indexOf(0, currentIndex);
-                if (transKeywordEnd === -1) continue;
-                currentIndex = transKeywordEnd + 1;
-                let textData = chunkData.subarray(currentIndex);
-                let text = '';
-                if (compressionFlag === 1) {
-                  if (compressionMethod === 0) {
-                    try {
-                      textData = zlib.inflateSync(textData);
-                      text = safeDecode(textData, 'utf8');
-                    } catch (inflateError) {
-                      console.error(`Error decompressing iTXt chunk (${keyword}) for ${filePath}:`, inflateError);
-                      continue;
-                    }
-                  } else {
-                    console.warn(`Unsupported iTXt compression method (${compressionMethod}) for ${filePath} keyword '${keyword}'`);
-                    continue;
-                  }
-                } else {
-                  text = safeDecode(textData, 'utf8');
-                }
-                textChunks.push({ keyword: keyword, text: text });
-              }
-            } catch (decodeError) {
-              console.error(`Error processing chunk ${chunkName} for ${filePath}:`, decodeError);
-              // Continue processing other chunks
-            }
-          }
-
-          if (textChunks.length > 0) {
-            const pngText = textChunks.map(chunk => `${chunk.keyword}: ${chunk.text}`).join('\n\n');
-            if (pngText) {
-              updatePngInfoStmt.run({ png_info: pngText, original_path: filePath });
-              pngInfoExtractedCount++;
-              pngSuccess = true;
-            }
-          }
-        } catch (err) {
-          // Catch errors from readFile or chunk extraction
-          console.error(`Failed to read or extract PNG chunks for ${filePath}:`, err);
-          pngInfoErrorCount++;
-        }
-      }
-
-      // --- Update Progress ---
-      processedFilesForMetadata++; // Count processed files regardless of metadata/png success
-      if (processedFilesForMetadata % 50 === 0 || processedFilesForMetadata === initialRegisteredCount) {
-        win.webContents.send('scan-status-update',
-          `メタデータ/PNG情報 取得中... (${processedFilesForMetadata}/${initialRegisteredCount})`
-        );
-      }
-    }
-
-    console.log(`Metadata update complete. Updated: ${metadataUpdatedCount}, Errors: ${metadataErrorCount}`);
-    console.log(`PNG Info processing complete. Extracted: ${pngInfoExtractedCount}, Errors: ${pngInfoErrorCount}`);
-
-    const finalMessage = 
-      `${initialRegisteredCount} 件の画像登録/更新完了。
-` +
-      `メタデータ: ${metadataUpdatedCount}件更新 (${metadataErrorCount}件エラー)。
-` +
-      `PNG Info: ${pngInfoExtractedCount}件抽出 (${pngInfoErrorCount}件エラー)。
-` +
-      `${initialSkippedCount}件スキップ。`;
-
-    win.webContents.send('scan-status-update', `完了: ${finalMessage}`);
-
-    return {
-      success: true,
-      folderPath,
-      fileCount: totalFiles,
-      registeredCount: initialRegisteredCount,
-      skippedCount: initialSkippedCount,
-      metadataUpdatedCount,
-      metadataErrorCount,
-      pngInfoExtractedCount,
-      pngInfoErrorCount,
-      message: finalMessage
-    };
+    console.log(`Found ${wordSet.size} unique words in PNG info.`);
+    return { success: true, words: Array.from(wordSet).sort() };
 
   } catch (err) {
-    console.error('Error during scan process:', err);
-     win.webContents.send('scan-status-update', `エラーが発生しました: ${err.message}`);
-    return { success: false, message: `処理中にエラーが発生しました: ${err.message}` };
+    console.error('Error getting unique PNG words:', err);
+    return { success: false, message: `PNG Info単語の取得中にエラー: ${err.message}`, words: [] };
   }
+}
+
+ipcMain.handle('get-unique-png-words', async () => {
+  return getUniquePngWords();
 }); 
