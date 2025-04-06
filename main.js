@@ -101,6 +101,30 @@ function createWindow() {
         }
       ]
     },
+    // 表示メニューを追加
+    {
+        label: '表示',
+        submenu: [
+            { role: 'zoomIn', label: '拡大' },
+            { role: 'zoomOut', label: '縮小' },
+            { role: 'resetZoom', label: '実際のサイズ' },
+            { type: 'separator' },
+            // アスペクト比維持の切り替えメニューを追加
+            {
+                label: 'サムネイルのアスペクト比を維持',
+                type: 'checkbox',
+                checked: false, // 初期状態は OFF (固定高さ)
+                click: (menuItem, browserWindow) => {
+                    if (browserWindow) {
+                        // レンダラープロセスに状態変更を通知
+                        browserWindow.webContents.send('toggle-aspect-ratio', menuItem.checked);
+                    }
+                }
+            },
+            { type: 'separator' },
+            { role: 'togglefullscreen', label: 'フルスクリーン切り替え' }
+        ]
+    },
     // Add other menus like '編集', '表示', 'ヘルプ' if needed
     {
       label: '開発', // For debugging
@@ -240,6 +264,55 @@ ipcMain.handle('update-memos', async (event, { imageIds, memo }) => {
   } catch (err) {
     console.error('IPC Error handling update-memos:', err);
     return { success: false, message: `メモの更新中にエラーが発生しました: ${err.message}` };
+  }
+});
+
+// 新しいIPCハンドラ: 選択された画像のメモにテキストを追記する
+ipcMain.handle('append-memos', async (event, { imageIds, text }) => {
+  if (!imageIds || imageIds.length === 0) {
+    return { success: false, message: 'メモを追記する画像が選択されていません。' };
+  }
+  if (!text) {
+    return { success: false, message: '追記するテキストが空です。' };
+  }
+  console.log(`IPC: Received append-memos request for IDs: ${imageIds.join(', ')} with text: "${text}"`);
+
+  try {
+    // トランザクション内で各画像のメモを取得して更新
+    let updatedCount = 0;
+    const appendTransaction = db.transaction((ids, appendText) => {
+      const getStmt = db.prepare('SELECT memo FROM images WHERE id = ?');
+      const updateStmt = db.prepare('UPDATE images SET memo = ? WHERE id = ?');
+      const newMemos = {}; // 更新後のメモを保持するオブジェクト
+
+      for (const id of ids) {
+        const row = getStmt.get(id);
+        if (row) {
+          const currentMemo = row.memo || ''; // 既存メモが NULL なら空文字に
+          // 既存メモが空でなく、かつ追記テキストと改行で連結
+          const newMemo = currentMemo ? `${currentMemo}\n${appendText}` : appendText;
+          const info = updateStmt.run(newMemo, id);
+          if (info.changes > 0) {
+            updatedCount++;
+            newMemos[id] = newMemo; // 更新成功したIDと新しいメモを記録
+          }
+        } else {
+          console.warn(`Append Memo: Image ID ${id} not found.`);
+        }
+      }
+      return newMemos; // トランザクションから更新後のメモを返す
+    });
+
+    // appendTransaction の実行結果 (newMemos) を受け取る
+    const updatedMemosMap = appendTransaction(imageIds, text);
+
+    console.log(`IPC: Appended memo for ${updatedCount} images.`);
+    // 返却値に newMemos を追加
+    return { success: true, updatedCount: updatedCount, message: `${updatedCount} 件の画像のメモに追記しました。`, newMemos: updatedMemosMap };
+
+  } catch (err) {
+    console.error('IPC Error handling append-memos:', err);
+    return { success: false, message: `メモの追記中にエラーが発生しました: ${err.message}` };
   }
 });
 

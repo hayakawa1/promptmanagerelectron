@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>Electron Image Viewer</title>
+    <title>PromptManager</title>
     <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' atom:">
     <style>
         body { font-family: sans-serif; margin: 10px; }
@@ -106,10 +106,16 @@
             font-size: 0.9em;
             color: #333;
         }
+
+        /* アスペクト比維持モードのスタイル */
+        #image-grid.aspect-ratio-mode img {
+            height: auto; /* 高さを自動に */
+            object-fit: contain; /* アスペクト比を維持し、全体を表示 */
+            max-height: 200px; /* 念のため最大高さを設定 */
+        }
     </style>
 </head>
 <body>
-    <h1>Electron Image Viewer</h1>
     <div class="toolbar">
         <!-- <button id="select-folder-button">フォルダを選択してスキャン</button>
         <p id="scan-status"></p> -->
@@ -137,10 +143,6 @@
         <span id="ipc-result"></span>
     </div> -->
 
-    <div class="control-group">
-        <h2>画像フォルダ操作</h2>
-    </div>
-
     <div id="image-grid"></div>
 
     <!-- Status Bar -->
@@ -156,6 +158,10 @@
             <div class="modal-info">
                 <h4>PNG Info:</h4>
                 <pre id="modal-png-info">読み込み中...</pre>
+                <!-- メモ表示・編集エリアを追加 -->
+                <h4>メモ:</h4>
+                <textarea id="modal-memo-input" rows="4" style="width: 95%; margin-bottom: 10px;"></textarea>
+                <button id="modal-save-memo-button">メモを保存</button>
             </div>
         </div>
     </div>

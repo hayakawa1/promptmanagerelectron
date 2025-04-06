@@ -68,9 +68,13 @@ let modalOverlay = null;
 let modalImage = null;
 let modalCloseButton = null;
 let modalPngInfo = null;
+let modalMemoInput = null;
+let modalSaveMemoButton = null;
+let currentModalImageId = null; // モーダルで表示中の画像IDを保持
 const deleteSelectedButton = document.getElementById('delete-selected-button');
 const memoInput = document.getElementById('memo-input');
-const updateMemoButton = document.getElementById('update-memo-button');
+const appendMemoButton = document.getElementById('update-memo-button');
+appendMemoButton.textContent = 'メモを追記'; // ボタンのテキストを変更
 const exportSelectedButton = document.getElementById('export-selected-button');
 const searchInput = document.getElementById('search-input'); // Get search input
 const folderFilter = document.getElementById('folder-filter'); // Get folder filter select
@@ -82,40 +86,46 @@ let debounceTimer = null; // Timer for debouncing search input
 let currentFolderFilter = ''; // Store the selected folder path
 let currentPngWordFilter = ''; // Store the selected PNG word
 
-// Function to open the modal and load PNG info
+// Function to open the modal and load PNG info and Memo
 async function openModal(imageId, imagePath) {
     console.log(`[openModal] Function called. Attempting to open modal for ID: ${imageId}, Path: ${imagePath}`);
     if (!imagePath || !imageId) {
         console.error('[openModal] Error: imageId or imagePath is missing!');
         return;
     }
+    currentModalImageId = imageId; // 現在の画像IDを保存
     try {
         // Set image source immediately
         const encodedPath = encodeURIComponent(imagePath);
         modalImage.src = `atom://${encodedPath}`;
 
-        // Clear previous PNG info and show loading message
+        // Clear previous info and show loading messages
         modalPngInfo.textContent = 'PNG Info 読み込み中...';
+        modalMemoInput.value = 'メモ読み込み中...'; // メモも読み込み中に
+        modalSaveMemoButton.disabled = true; // 保存ボタンを無効化
         modalOverlay.style.display = 'block';
-        console.log('[openModal] Modal overlay displayed. Fetching PNG info...');
+        console.log('[openModal] Modal overlay displayed. Fetching PNG info and memo...');
 
         // Fetch PNG info asynchronously
-        const result = await window.electronAPI.getPngInfo(imageId);
-        console.log('[openModal] Received PNG info result:', result);
-
-        if (result.success) {
-            if (result.pngInfo) {
-                modalPngInfo.textContent = result.pngInfo;
-            } else {
-                modalPngInfo.textContent = 'PNG Info はありません。'; // Handle case where png_info is null/empty
-            }
+        const pngResult = await window.electronAPI.getPngInfo(imageId);
+        console.log('[openModal] Received PNG info result:', pngResult);
+        if (pngResult.success) {
+            modalPngInfo.textContent = pngResult.pngInfo || 'PNG Info はありません。';
         } else {
-            modalPngInfo.textContent = `エラー: ${result.message}`;
+            modalPngInfo.textContent = `エラー: ${pngResult.message}`;
         }
 
+        // Fetch Memo asynchronously (use getImages with ID filter - needs adjustment in main.js or a new handler)
+        // Temporarily, find memo from currentGridImages
+        const gridImageElement = currentGridImages.find(img => parseInt(img.dataset.imageId, 10) === imageId);
+        const currentMemo = gridImageElement ? gridImageElement.title.split('\nMemo: ')[1] || '' : ''; // グリッドのtitleからメモを取得 (暫定)
+        modalMemoInput.value = currentMemo;
+        modalSaveMemoButton.disabled = false; // メモを読み込んだら保存ボタンを有効化
+
     } catch (error) {
-        console.error('[openModal] Error setting image source or fetching PNG info:', error);
-        modalPngInfo.textContent = 'PNG Info の取得または表示中にエラーが発生しました。';
+        console.error('[openModal] Error setting image source or fetching info:', error);
+        modalPngInfo.textContent = '情報の取得または表示中にエラーが発生しました。';
+        modalMemoInput.value = 'メモの読み込みに失敗しました。';
     }
 }
 
@@ -124,6 +134,8 @@ function closeModal() {
     modalOverlay.style.display = 'none';
     modalImage.src = '';
     modalPngInfo.textContent = ''; // Clear PNG info when closing
+    modalMemoInput.value = ''; // Clear memo input
+    currentModalImageId = null; // モーダルが閉じたらIDをクリア
 }
 
 // Event listeners for closing the modal (Setup moved to DOMContentLoaded)
@@ -145,7 +157,7 @@ function updateSelectionVisuals() {
     // Update button states based on selection
     deleteSelectedButton.disabled = !hasSelection;
     memoInput.disabled = !hasSelection;
-    updateMemoButton.disabled = !hasSelection;
+    appendMemoButton.disabled = !hasSelection;
     exportSelectedButton.disabled = !hasSelection;
 
     // Clear memo input if nothing is selected
@@ -215,6 +227,11 @@ function createImageElement(image) {
         }
 
         updateSelectionVisuals(); // Update CSS classes based on the new selection set
+
+        // 画像選択後、メモ入力欄が有効ならフォーカスを当てる
+        if (!memoInput.disabled) {
+            memoInput.focus();
+        }
     });
 
     // --- Double Click Listener for Actual Size Modal ---
@@ -411,6 +428,8 @@ document.addEventListener('DOMContentLoaded', async () => { // Make async to awa
         modalImage = document.getElementById('modal-image');
         modalCloseButton = document.getElementById('modal-close-button');
         modalPngInfo = document.getElementById('modal-png-info');
+        modalMemoInput = document.getElementById('modal-memo-input');
+        modalSaveMemoButton = document.getElementById('modal-save-memo-button');
 
         // Add modal close listeners now that elements are found
         if (modalCloseButton) {
@@ -426,6 +445,42 @@ document.addEventListener('DOMContentLoaded', async () => { // Make async to awa
             });
         } else {
              console.error('[DOMContentLoaded] modalOverlay not found!');
+        }
+
+        // Add listener for the modal save memo button
+        if (modalSaveMemoButton && modalMemoInput) {
+            modalSaveMemoButton.addEventListener('click', async () => {
+                if (currentModalImageId === null) {
+                    console.error('Modal Save Memo Error: No image ID is currently set.');
+                    return;
+                }
+                const newMemo = modalMemoInput.value;
+                modalSaveMemoButton.disabled = true; // Disable button during save
+                console.log(`Modal: Requesting memo update for ID: ${currentModalImageId} with memo: "${newMemo}"`);
+
+                try {
+                    // Use the existing updateMemos API, sending a single ID in an array
+                    const result = await window.electronAPI.updateMemos({ imageIds: [currentModalImageId], memo: newMemo });
+                    console.log('Modal Memo update result:', result);
+
+                    if (result.success) {
+                        alert('メモを保存しました。'); // Simple feedback
+                        // Update the title of the image in the main grid
+                        updateImageTitle(currentModalImageId, newMemo);
+                        // Optionally close modal after save?
+                        // closeModal();
+                    } else {
+                        alert(`メモの保存に失敗しました: ${result.message}`);
+                    }
+                } catch (error) {
+                    console.error('Error calling updateMemos from modal:', error);
+                    alert('メモの保存中に予期せぬエラーが発生しました。');
+                } finally {
+                    modalSaveMemoButton.disabled = false; // Re-enable button
+                }
+            });
+        } else {
+             console.error('[DOMContentLoaded] modalMemoInput or modalSaveMemoButton not found!');
         }
 
         // Reset grid and state
@@ -473,6 +528,18 @@ window.electronAPI.onScanStatusUpdate(async (statusMessage) => { // Make async
   }
 });
 
+// アスペクト比維持モードの切り替えハンドラ
+window.electronAPI.onToggleAspectRatio((isEnabled) => {
+    console.log(`Toggle aspect ratio mode: ${isEnabled}`);
+    if (isEnabled) {
+        imageGrid.classList.add('aspect-ratio-mode');
+    } else {
+        imageGrid.classList.remove('aspect-ratio-mode');
+    }
+    // 必要であれば、レイアウト再計算を促す（通常は不要）
+    // window.dispatchEvent(new Event('resize'));
+});
+
 // --- Add Delete Button Listener ---
 deleteSelectedButton.addEventListener('click', async () => {
     const idsToDelete = Array.from(selectedImageIds);
@@ -509,12 +576,14 @@ deleteSelectedButton.addEventListener('click', async () => {
             // Show error message (e.g., user cancelled, DB error)
             scanStatusParagraph.textContent = `削除エラー: ${result.message}`;
             // Re-enable button if deletion failed but selection still exists
-            deleteSelectedButton.disabled = selectedImageIds.size === 0;
+            // deleteSelectedButton.disabled = selectedImageIds.size === 0;
+            updateSelectionVisuals(); // エラー時もUI状態を更新
         }
     } catch (error) {
         console.error('Error calling deleteImages:', error);
         scanStatusParagraph.textContent = '画像の削除中に予期せぬエラーが発生しました。';
-        deleteSelectedButton.disabled = selectedImageIds.size === 0; // Re-enable button
+        // deleteSelectedButton.disabled = selectedImageIds.size === 0; // Re-enable button
+        updateSelectionVisuals(); // エラー時もUI状態を更新
     }
 });
 
@@ -530,45 +599,63 @@ function updateImageTitle(imageId, newMemo) {
     }
 }
 
-// --- Add Memo Update Button Listener ---
-updateMemoButton.addEventListener('click', async () => {
-    const idsToUpdate = Array.from(selectedImageIds);
-    const newMemo = memoInput.value;
+// --- メモ追記ボタンのリスナーに変更 ---
+appendMemoButton.addEventListener('click', async () => {
+    const idsToAppend = Array.from(selectedImageIds);
+    const textToAppend = memoInput.value;
 
-    if (idsToUpdate.length === 0) {
-        console.warn('Update memo button clicked, but no images selected.');
+    if (idsToAppend.length === 0) {
+        console.warn('Append memo button clicked, but no images selected.');
         return;
     }
+    if (!textToAppend) {
+         console.warn('Append memo button clicked, but no text to append.');
+         alert('追記する内容を入力してください。');
+         return;
+    }
 
-    console.log(`Requesting memo update for IDs: ${idsToUpdate.join(', ')} with memo: "${newMemo}"`);
-    updateMemoButton.disabled = true; // Disable while processing
+    console.log(`Requesting memo append for IDs: ${idsToAppend.join(', ')} with text: "${textToAppend}"`);
+    appendMemoButton.disabled = true; // Disable while processing
     memoInput.disabled = true;
-    scanStatusParagraph.textContent = 'メモ更新中...';
+    scanStatusParagraph.textContent = 'メモ追記中...';
 
     try {
-        const result = await window.electronAPI.updateMemos({ imageIds: idsToUpdate, memo: newMemo });
-        console.log('Memo update result:', result);
+        // 新しいIPCハンドラ 'append-memos' を呼び出す
+        const result = await window.electronAPI.appendMemos({ imageIds: idsToAppend, text: textToAppend });
+        console.log('Memo append result:', result);
 
         if (result.success) {
             scanStatusParagraph.textContent = result.message;
             // Optionally update titles of affected images in the grid
-            idsToUpdate.forEach(id => updateImageTitle(id, newMemo));
-            // Clear memo input after successful update
-            memoInput.value = '';
-            // Re-enable based on selection (which hasn't changed)
-            memoInput.disabled = selectedImageIds.size === 0;
-            updateMemoButton.disabled = selectedImageIds.size === 0;
-        } else {
-            scanStatusParagraph.textContent = `メモ更新エラー: ${result.message}`;
+            // (Need to get the new full memo back from main process or re-fetch)
+            // For now, just clear the input
+
+            // 返却された newMemos を使って title を更新
+            if (result.newMemos) {
+                idsToAppend.forEach(id => {
+                    if (result.newMemos[id] !== undefined) {
+                        updateImageTitle(id, result.newMemos[id]);
+                    }
+                });
+            }
+
+            memoInput.value = ''; // Clear input after successful append
             // Re-enable based on selection
             memoInput.disabled = selectedImageIds.size === 0;
-            updateMemoButton.disabled = selectedImageIds.size === 0;
+            appendMemoButton.disabled = selectedImageIds.size === 0;
+        } else {
+            scanStatusParagraph.textContent = `メモ追記エラー: ${result.message}`;
+            // Re-enable based on selection
+            // memoInput.disabled = selectedImageIds.size === 0;
+            // appendMemoButton.disabled = selectedImageIds.size === 0;
+            updateSelectionVisuals(); // エラー時もUI状態を更新
         }
     } catch (error) {
-        console.error('Error calling updateMemos:', error);
-        scanStatusParagraph.textContent = 'メモの更新中に予期せぬエラーが発生しました。';
-        memoInput.disabled = selectedImageIds.size === 0;
-        updateMemoButton.disabled = selectedImageIds.size === 0;
+        console.error('Error calling appendMemos:', error);
+        scanStatusParagraph.textContent = 'メモの追記中に予期せぬエラーが発生しました。';
+        // memoInput.disabled = selectedImageIds.size === 0;
+        // appendMemoButton.disabled = selectedImageIds.size === 0;
+        updateSelectionVisuals(); // エラー時もUI状態を更新
     }
 });
 
@@ -584,7 +671,7 @@ exportSelectedButton.addEventListener('click', async () => {
     exportSelectedButton.disabled = true; // Disable while processing
     // Disable other action buttons too?
     deleteSelectedButton.disabled = true;
-    updateMemoButton.disabled = true;
+    appendMemoButton.disabled = true;
     memoInput.disabled = true;
     scanStatusParagraph.textContent = '選択した画像を保存中...';
 

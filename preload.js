@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getPngInfo: (id) => ipcRenderer.invoke('get-png-info', id),
   searchImages: (options) => ipcRenderer.invoke('search-images', options),
   getUniquePngWords: () => ipcRenderer.invoke('get-unique-png-words'),
+  appendMemos: (data) => ipcRenderer.invoke('append-memos', data),
   onScanStatusUpdate: (callback) => ipcRenderer.on('scan-status-update', (_event, value) => callback(value)),
-  onTriggerFolderScan: (callback) => ipcRenderer.on('trigger-folder-scan', () => callback())
+  onTriggerFolderScan: (callback) => ipcRenderer.on('trigger-folder-scan', () => callback()),
+  onToggleAspectRatio: (callback) => ipcRenderer.on('toggle-aspect-ratio', (_event, isEnabled) => callback(isEnabled))
 }); 
