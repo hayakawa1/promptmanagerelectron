@@ -79,12 +79,20 @@ const exportSelectedButton = document.getElementById('export-selected-button');
 const searchInput = document.getElementById('search-input'); // Get search input
 const folderFilter = document.getElementById('folder-filter'); // Get folder filter select
 const pngWordFilter = document.getElementById('png-word-filter'); // Get PNG word filter select
+// IDフィルターと並び順の要素を取得
+const minIdInput = document.getElementById('min-id-input');
+const maxIdInput = document.getElementById('max-id-input');
+const sortOrderSelect = document.getElementById('sort-order-select');
 
 // --- State Management ---
 let currentSearchTerm = ''; // Store the current search term
 let debounceTimer = null; // Timer for debouncing search input
 let currentFolderFilter = ''; // Store the selected folder path
 let currentPngWordFilter = ''; // Store the selected PNG word
+// IDフィルターと並び順の状態変数を追加
+let currentMinId = '';
+let currentMaxId = '';
+let currentSortOrder = 'ASC'; // Default to Ascending
 
 // Function to open the modal and load PNG info and Memo
 async function openModal(imageId, imagePath) {
@@ -121,6 +129,19 @@ async function openModal(imageId, imagePath) {
         const currentMemo = gridImageElement ? gridImageElement.title.split('\nMemo: ')[1] || '' : ''; // グリッドのtitleからメモを取得 (暫定)
         modalMemoInput.value = currentMemo;
         modalSaveMemoButton.disabled = false; // メモを読み込んだら保存ボタンを有効化
+
+        // --- デバッグ用: Raw PNG Info をコンソールに出力 ---
+        try {
+            const rawPngResult = await window.electronAPI.getRawPngInfo(imageId);
+            if (rawPngResult.success) {
+                console.log(`[Debug] Raw PNG Info for ID ${imageId}:\n`, rawPngResult.rawPngInfo);
+            } else {
+                console.warn(`[Debug] Failed to get raw PNG info for ID ${imageId}: ${rawPngResult.message}`);
+            }
+        } catch (rawError) {
+            console.error(`[Debug] Error fetching raw PNG info for ID ${imageId}:`, rawError);
+        }
+        // --- ここまでデバッグ用コード ---
 
     } catch (error) {
         console.error('[openModal] Error setting image source or fetching info:', error);
@@ -227,11 +248,6 @@ function createImageElement(image) {
         }
 
         updateSelectionVisuals(); // Update CSS classes based on the new selection set
-
-        // 画像選択後、メモ入力欄が有効ならフォーカスを当てる
-        if (!memoInput.disabled) {
-            memoInput.focus();
-        }
     });
 
     // --- Double Click Listener for Actual Size Modal ---
@@ -304,31 +320,39 @@ async function populatePngWordFilter() {
 }
 
 // Function to load images (add folderPath parameter)
-async function loadImages(offset = 0, limit = PAGE_SIZE, searchTerm = currentSearchTerm, folderPath = currentFolderFilter, pngWord = currentPngWordFilter) {
+async function loadImages(offset = 0, limit = PAGE_SIZE,
+                         searchTerm = currentSearchTerm, folderPath = currentFolderFilter, pngWord = currentPngWordFilter,
+                         minId = currentMinId, maxId = currentMaxId, sortOrder = currentSortOrder) {
     if (isLoading || (offset > 0 && currentOffset >= totalImages)) {
         return;
     }
-    console.log(`[loadImages] Attempting to load: offset=${offset}, limit=${limit}, term='${searchTerm}', folder='${folderPath}', pngWord='${pngWord}'`);
+    console.log(`[loadImages] Attempting to load: offset=${offset}, limit=${limit}, term='${searchTerm}', folder='${folderPath}', pngWord='${pngWord}', minId='${minId}', maxId='${maxId}', sort='${sortOrder}'`);
     isLoading = true;
     // Update loading message based on active filters
     let loadingMsg = '画像を読み込み中...';
     if (searchTerm) loadingMsg = `'${searchTerm}' を検索中...`;
     else if (pngWord) loadingMsg = `PNG単語 '${pngWord}' でフィルタ中...`;
     else if (folderPath) loadingMsg = `フォルダ '${folderPath}' を表示中...`;
+    // IDフィルターメッセージも追加 (任意)
+    if (minId || maxId) loadingMsg += ` (ID: ${minId || '?'}-${maxId || '?'})`;
+
     scanStatusParagraph.textContent = loadingMsg;
 
     try {
         let result;
-        const options = { limit, offset };
+        const options = { limit, offset, sortOrder }; // sortOrder を追加
         if (searchTerm) options.term = searchTerm;
         if (folderPath) options.folderPath = folderPath;
         if (pngWord) options.pngWord = pngWord; // Add pngWord to options
+        // minId, maxId を options に追加
+        if (minId !== '') options.minId = parseInt(minId, 10); // 数値に変換
+        if (maxId !== '') options.maxId = parseInt(maxId, 10); // 数値に変換
 
-        // Call searchImages if any filter is active
-        if (searchTerm || folderPath || pngWord) {
+        // Call searchImages if any filter is active (including ID filters now)
+        if (searchTerm || folderPath || pngWord || minId !== '' || maxId !== '') { // IDフィルター条件も追加
             console.log(`[loadImages] Calling window.electronAPI.searchImages...`, options);
             result = await window.electronAPI.searchImages(options);
-        } else { // Otherwise call getImages
+        } else { // Otherwise call getImages (only limit, offset, sortOrder are relevant here)
             console.log(`[loadImages] Calling window.electronAPI.getImages...`, options);
             result = await window.electronAPI.getImages(options);
         }
@@ -353,6 +377,12 @@ async function loadImages(offset = 0, limit = PAGE_SIZE, searchTerm = currentSea
             if (pngWordStatus) baseStatus += (baseStatus ? ' + ' : '') + pngWordStatus;
             if (!searchStatus && !pngWordStatus) baseStatus = folderStatus;
             else if (folderPath) baseStatus += ` (${folderStatus})`;
+            // IDフィルターステータスを追加
+            if (minId !== '' || maxId !== '') {
+                 baseStatus += (baseStatus ? ' | ' : '') + `ID: ${minId || '?'}-${maxId || '?'}`;
+            }
+            // ソート順ステータスを追加
+            baseStatus += ` (${sortOrder === 'ASC' ? 'ID昇順' : 'ID降順'})`;
 
             scanStatusParagraph.textContent = `${baseStatus}: ${currentOffset} / ${totalImages} 件`;
 
@@ -381,7 +411,7 @@ folderFilter.addEventListener('change', () => {
     // Reset pagination and reload images with the new filter
     currentOffset = 0;
     totalImages = 0;
-    loadImages(0, PAGE_SIZE, currentSearchTerm, currentFolderFilter, currentPngWordFilter); // Pass pngWord filter too
+    loadImages(0, PAGE_SIZE, currentSearchTerm, currentFolderFilter, currentPngWordFilter, currentMinId, currentMaxId, currentSortOrder); // Pass pngWord filter too
 });
 
 // --- PNG Word Filter Listener ---
@@ -391,7 +421,7 @@ pngWordFilter.addEventListener('change', () => {
     // Reset pagination and reload images with the new filter
     currentOffset = 0;
     totalImages = 0;
-    loadImages(0, PAGE_SIZE, currentSearchTerm, currentFolderFilter, currentPngWordFilter);
+    loadImages(0, PAGE_SIZE, currentSearchTerm, currentFolderFilter, currentPngWordFilter, currentMinId, currentMaxId, currentSortOrder);
 });
 
 // --- Search Input Listener with Debounce ---
@@ -403,19 +433,34 @@ searchInput.addEventListener('input', () => {
         currentSearchTerm = searchTerm;
         currentOffset = 0;
         totalImages = 0;
-        // Pass both folder and pngWord filters to loadImages
-        loadImages(0, PAGE_SIZE, currentSearchTerm, currentFolderFilter, currentPngWordFilter);
+        // Pass all current filters to loadImages
+        loadImages(0, PAGE_SIZE, currentSearchTerm, currentFolderFilter, currentPngWordFilter, currentMinId, currentMaxId, currentSortOrder);
     }, 500);
 });
+
+// --- ID Filter and Sort Order Listeners ---
+function handleIdSortFilterChange() {
+    currentMinId = minIdInput.value.trim();
+    currentMaxId = maxIdInput.value.trim();
+    currentSortOrder = sortOrderSelect.value;
+    console.log(`ID/Sort filters changed: minId='${currentMinId}', maxId='${currentMaxId}', sort='${currentSortOrder}'`);
+    currentOffset = 0;
+    totalImages = 0;
+    loadImages(0, PAGE_SIZE, currentSearchTerm, currentFolderFilter, currentPngWordFilter, currentMinId, currentMaxId, currentSortOrder);
+}
+
+minIdInput.addEventListener('change', handleIdSortFilterChange); // change イベントを使用 (入力完了時)
+maxIdInput.addEventListener('change', handleIdSortFilterChange);
+sortOrderSelect.addEventListener('change', handleIdSortFilterChange);
 
 // --- Infinite Scroll Logic ---
 window.addEventListener('scroll', () => {
     const threshold = 300;
     if (!isLoading && currentOffset < totalImages &&
         (window.innerHeight + window.scrollY) >= document.body.offsetHeight - threshold)
-    {   // Pass all filters
-        console.log('Scroll threshold reached, loading more images for term:', currentSearchTerm, 'folder:', currentFolderFilter, 'pngWord:', currentPngWordFilter);
-        loadImages(currentOffset, PAGE_SIZE, currentSearchTerm, currentFolderFilter, currentPngWordFilter);
+    {   // Pass all filters, including ID and sort
+        console.log('Scroll threshold reached, loading more images for term:', currentSearchTerm, 'folder:', currentFolderFilter, 'pngWord:', currentPngWordFilter, 'minId:', currentMinId, 'maxId:', currentMaxId, 'sort:', currentSortOrder);
+        loadImages(currentOffset, PAGE_SIZE, currentSearchTerm, currentFolderFilter, currentPngWordFilter, currentMinId, currentMaxId, currentSortOrder);
     }
 });
 
@@ -497,6 +542,13 @@ document.addEventListener('DOMContentLoaded', async () => { // Make async to awa
         folderFilter.value = ''; // Reset dropdown visually
         currentPngWordFilter = ''; // Reset PNG word filter state
         pngWordFilter.value = ''; // Reset PNG word dropdown visually
+        // IDフィルターと並び順をリセット
+        currentMinId = '';
+        minIdInput.value = '';
+        currentMaxId = '';
+        maxIdInput.value = '';
+        currentSortOrder = 'ASC';
+        sortOrderSelect.value = 'ASC';
 
         // Populate filters initially
         await populateFolderFilter();
@@ -520,6 +572,13 @@ window.electronAPI.onScanStatusUpdate(async (statusMessage) => { // Make async
     folderFilter.value = ''; // Reset dropdown visually
     currentPngWordFilter = ''; // Reset PNG word filter state
     pngWordFilter.value = ''; // Reset PNG word dropdown visually
+    // IDフィルターと並び順もリセット
+    currentMinId = '';
+    minIdInput.value = '';
+    currentMaxId = '';
+    maxIdInput.value = '';
+    currentSortOrder = 'ASC';
+    sortOrderSelect.value = 'ASC';
 
     // Update folder list after scan
     await populateFolderFilter();

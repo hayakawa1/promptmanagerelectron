@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   searchImages: (options) => ipcRenderer.invoke('search-images', options),
   getUniquePngWords: () => ipcRenderer.invoke('get-unique-png-words'),
   appendMemos: (data) => ipcRenderer.invoke('append-memos', data),
+  getRawPngInfo: (id) => ipcRenderer.invoke('get-raw-png-info', id),
   onScanStatusUpdate: (callback) => ipcRenderer.on('scan-status-update', (_event, value) => callback(value)),
   onTriggerFolderScan: (callback) => ipcRenderer.on('trigger-folder-scan', () => callback()),
   onToggleAspectRatio: (callback) => ipcRenderer.on('toggle-aspect-ratio', (_event, isEnabled) => callback(isEnabled))

@@ -129,6 +129,13 @@
             <!-- PNG word options will be populated here -->
         </select>
         <input type="text" id="search-input" placeholder="ファイル名, メモ, PNG Info で検索..." style="margin-left: 10px; width: 200px;"/>
+        <!-- ID フィルターと並び順を追加 -->
+        <input type="number" id="min-id-input" placeholder="最小ID" style="width: 80px; margin-left: 10px;">
+        <input type="number" id="max-id-input" placeholder="最大ID" style="width: 80px;">
+        <select id="sort-order-select" style="margin-left: 5px;">
+            <option value="ASC">ID昇順</option>
+            <option value="DESC">ID降順</option>
+        </select>
         <!-- Selection Actions -->
         <span style="margin-left: auto;">
             <input type="text" id="memo-input" placeholder="選択した画像のメモを入力..." disabled />

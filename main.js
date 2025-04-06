@@ -201,30 +201,51 @@ ipcMain.handle('get-distinct-folders', async () => {
   }
 });
 
-// 画像情報を取得する IPC ハンドラ (フォルダフィルタ追加)
-ipcMain.handle('get-images', async (event, { limit = 50, offset = 0, folderPath = null } = {}) => {
-  console.log(`IPC: Received get-images request (limit=${limit}, offset=${offset}, folder='${folderPath}')`);
+// 画像情報を取得する IPC ハンドラ (フォルダフィルタ、IDフィルタ、ソート順追加)
+ipcMain.handle('get-images', async (event, { limit = 50, offset = 0, folderPath = null, minId = null, maxId = null, sortOrder = 'ASC' } = {}) => {
+  console.log(`IPC: Received get-images request (limit=${limit}, offset=${offset}, folder='${folderPath}', minId='${minId}', maxId='${maxId}', sort='${sortOrder}')`);
   try {
-    let sql = `
-      SELECT id, original_path, file_name, width, height, format, memo
-      FROM images
-    `;
-    let countSql = 'SELECT COUNT(*) as total FROM images';
+    let whereClauses = [];
     const params = [];
     const countParams = [];
 
     if (folderPath) {
-      sql += ' WHERE folder_path = ?';
-      countSql += ' WHERE folder_path = ?';
+      whereClauses.push('folder_path = ?');
       params.push(folderPath);
       countParams.push(folderPath);
     }
+    if (minId !== null && !isNaN(minId)) {
+        whereClauses.push('id >= ?');
+        params.push(minId);
+        countParams.push(minId);
+    }
+    if (maxId !== null && !isNaN(maxId)) {
+        whereClauses.push('id <= ?');
+        params.push(maxId);
+        countParams.push(maxId);
+    }
 
-    sql += ' ORDER BY id ASC LIMIT ? OFFSET ?';
+    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+    // sortOrder のバリデーション (ASC or DESC)
+    const validSortOrder = ('DESC' === sortOrder.toUpperCase()) ? 'DESC' : 'ASC';
+
+    const sql = `
+      SELECT id, original_path, file_name, width, height, format, memo
+      FROM images
+      ${whereSql}
+      ORDER BY id ${validSortOrder}
+      LIMIT ? OFFSET ?
+    `;
+    const countSql = `SELECT COUNT(*) as total FROM images ${whereSql}`;
+
+    // Add limit and offset to params for the main query
     params.push(limit, offset);
 
     const stmt = db.prepare(sql);
     const countStmt = db.prepare(countSql);
+
+    console.log('Executing Get SQL:', sql, 'Params:', params);
+    console.log('Executing Count SQL:', countSql, 'Params:', countParams);
 
     const images = stmt.all(params);
     const { total } = countStmt.get(countParams);
@@ -461,17 +482,47 @@ ipcMain.handle('get-png-info', async (event, imageId) => {
   }
 });
 
-// 画像を検索する IPC ハンドラ (フォルダフィルタ追加)
-ipcMain.handle('search-images', async (event, { term, limit = 50, offset = 0, folderPath = null, pngWord = null } = {}) => {
+// 特定の画像の Raw PNG Info を取得する IPC ハンドラ (デバッグ用)
+ipcMain.handle('get-raw-png-info', async (event, imageId) => {
+  if (!imageId) {
+    return { success: false, message: '画像 ID が指定されていません。' };
+  }
+  console.log(`IPC: Received get-raw-png-info request for ID: ${imageId}`);
+
+  try {
+    // png_info カラムのみを選択
+    const stmt = db.prepare('SELECT png_info FROM images WHERE id = ?');
+    const result = stmt.get(imageId);
+
+    if (result) {
+      console.log(`IPC: Returning raw PNG info for ID: ${imageId}`);
+      // 整形せずにそのまま返す
+      return { success: true, rawPngInfo: result.png_info };
+    } else {
+      console.log(`IPC: Image not found for ID: ${imageId}`);
+      return { success: false, message: '画像が見つかりません。' };
+    }
+  } catch (err) {
+    console.error(`IPC Error handling get-raw-png-info for ID ${imageId}:`, err);
+    return { success: false, message: `Raw PNG Info の取得中にエラーが発生しました: ${err.message}` };
+  }
+});
+
+// 画像を検索する IPC ハンドラ (フォルダフィルタ、IDフィルタ、ソート順追加)
+ipcMain.handle('search-images', async (event, {
+        term, limit = 50, offset = 0, folderPath = null, pngWord = null,
+        minId = null, maxId = null, sortOrder = 'ASC' // ID/Sort パラメータ追加
+    } = {}) => {
   const searchTerm = term ? `%${term}%` : null;
   const searchPngWord = pngWord ? `%${pngWord}%` : null;
-  console.log(`IPC: Received search-images request (term='${term}', pngWord='${pngWord}', limit=${limit}, offset=${offset}, folder='${folderPath}')`);
+  console.log(`IPC: Received search-images request (term='${term}', pngWord='${pngWord}', limit=${limit}, offset=${offset}, folder='${folderPath}', minId='${minId}', maxId='${maxId}', sort='${sortOrder}')`); // Log 新パラメータ
 
-  // Ensure at least one filter criteria is present
-  if (!searchTerm && !folderPath && !searchPngWord) {
-      console.log('IPC: Search term, folder, and PNG word are empty, using get-images logic (all).');
-      // Delegate or return empty, assuming client calls get-images for the 'all' case
-       return { success: true, images: [], total: 0 };
+  // Ensure at least one filter criteria is present (term, folder, pngWord, minId, maxId)
+  if (!searchTerm && !folderPath && !searchPngWord && minId === null && maxId === null) {
+      console.log('IPC: All filters are empty, using get-images logic (all).');
+      // Delegate to get-images (but with sorting)
+      return await ipcMain.handlers.get('get-images')(event, { limit, offset, sortOrder });
+      // return { success: true, images: [], total: 0 }; // Or return empty
   }
 
   try {
@@ -486,7 +537,6 @@ ipcMain.handle('search-images', async (event, { term, limit = 50, offset = 0, fo
     }
     if (searchPngWord) {
       // Search for the specific word within the png_info text
-      // Using LIKE for flexibility, adjust if exact match needed
       whereClauses.push('png_info LIKE ?');
       params.push(searchPngWord);
       countParams.push(searchPngWord);
@@ -496,14 +546,27 @@ ipcMain.handle('search-images', async (event, { term, limit = 50, offset = 0, fo
       params.push(folderPath);
       countParams.push(folderPath);
     }
+    // ID フィルター条件を追加
+    if (minId !== null && !isNaN(minId)) {
+        whereClauses.push('id >= ?');
+        params.push(minId);
+        countParams.push(minId);
+    }
+    if (maxId !== null && !isNaN(maxId)) {
+        whereClauses.push('id <= ?');
+        params.push(maxId);
+        countParams.push(maxId);
+    }
 
     const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+    // sortOrder のバリデーション (ASC or DESC)
+    const validSortOrder = ('DESC' === sortOrder.toUpperCase()) ? 'DESC' : 'ASC';
 
     const searchSql = `
       SELECT id, original_path, file_name, width, height, format, memo
       FROM images
       ${whereSql}
-      ORDER BY id ASC
+      ORDER BY id ${validSortOrder}
       LIMIT ? OFFSET ?
     `;
     const countSql = `SELECT COUNT(*) as total FROM images ${whereSql}`;
@@ -649,7 +712,7 @@ async function scanDirectory(dirPath, targetWindow) {
                     console.warn(`Skipping ${normalizedPath} due to missing essential metadata (format, width, height). Sharp error: ${sharpError?.message}`);
                     skippedCount++;
                     return; // Skip this file if essential data is missing
-      }
+                }
 
                 // 3. Extract PNG text chunks (if applicable)
                 let pngInfoText = null;
@@ -771,25 +834,71 @@ async function scanDirectory(dirPath, targetWindow) {
   }
 }
 
-// Function to get unique words from png_info
+// Function to get unique words from png_info (Improved for Stable Diffusion format)
 function getUniquePngWords() {
   try {
     const stmt = db.prepare('SELECT DISTINCT png_info FROM images WHERE png_info IS NOT NULL AND png_info != \'\'');
     const results = stmt.all();
     const wordSet = new Set();
-    const separators = /[,\s\n=:]+/; // Comma, space, newline, equals, colon
+    // 区切り文字: カンマ、空白、改行
+    const separators = /[\s,;\n]+/;
 
     results.forEach(row => {
       if (row.png_info) {
-        // Split by separators, filter out empty strings, and trim
-        const words = row.png_info.split(separators)
-                            .map(word => word.trim().toLowerCase())
-                            .filter(word => word.length > 1); // Filter out very short/empty strings
+        // デバッグ用 console.log は削除
+        // console.log(`[Debug] Raw png_info from DB (getUniquePngWords): Content:\n${row.png_info}`);
+
+        let relevantText = row.png_info;
+
+        // "tEXt: ..." 形式のような、デコードされていないデータはスキップ
+        if (relevantText.startsWith('tEXt:')) {
+             // console.log('[Debug] Skipping tEXt chunk-like data.');
+             return; // 次のレコードへ
+        }
+
+        // 主要なメタデータ行 (Steps:, Sampler:, etc.) を除外し、
+        // プロンプト/ネガティブプロンプト部分を抽出する試み
+        const lines = relevantText.split('\n');
+        let processedText = lines.filter(line => {
+             // メタデータ行を除外 (より多くのキーを追加)
+             if (/^(parameters:|steps:|sampler:|cfg scale:|seed:|size:|model hash:|model:|denoising strength:|lora hashes:|version:|adetailer|hires|mask blur:|clip skip:|ensd:)/i.test(line.trim())) {
+                 return false;
+             }
+             // Negative prompt: 行自体は含めない (その後の行は含む)
+             if (/^negative prompt:/i.test(line.trim())) {
+                 return false;
+             }
+             return true; // それ以外の行を対象とする
+        }).join('\n'); // 再度文字列に結合
+
+        // 括弧、山括弧、数値重み(:1.2など)、BREAKキーワード、クォートを除去
+        processedText = processedText
+            .replace(/[\(\)<>\[\]]/g, ' ')      // 括弧、山括弧、角括弧をスペースに
+            .replace(/:\d+(\.\d+)?/g, ' ')     // :1.2 のような重みをスペースに
+            .replace(/\bBREAK\b/gi, ' ')       // BREAK キーワードをスペースに (大文字小文字無視)
+            .replace(/["'`]/g, ' ');           // クォート類をスペースに
+
+        const words = processedText.split(separators)
+            .map(word => {
+                // 前後の不要な文字(空白、記号など)を除去し、小文字化
+                let cleanedWord = word.trim().replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, ''); // 先頭末尾の非英数字を除去
+                // 必要であればさらに不要な文字を除去 (アンダースコアは残す場合が多いので注意)
+                // cleanedWord = cleanedWord.replace(/[^a-zA-Z0-9_ -]/g, '');
+                return cleanedWord.toLowerCase();
+            })
+            // 意味のある単語のみを対象とする
+            .filter(word =>
+                word &&                  // 空でない
+                word.length > 1 &&       // 長さ2以上
+                !/^\d+$/.test(word) &&    // 数字のみでない
+                /[a-zA-Z]/.test(word)   // 最低1文字はアルファベットを含む (記号のみや数字+記号を除外)
+            );
+
         words.forEach(word => wordSet.add(word));
       }
     });
 
-    console.log(`Found ${wordSet.size} unique words in PNG info.`);
+    console.log(`Found ${wordSet.size} unique words in PNG info (Improved).`);
     return { success: true, words: Array.from(wordSet).sort() };
 
   } catch (err) {
